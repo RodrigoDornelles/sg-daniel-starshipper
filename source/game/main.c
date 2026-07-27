@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 // ---------------------------------------------------------------------
 // Tuning constants, ported 1:1 from source/main.js
@@ -88,6 +89,29 @@ static bool edge(bool now, bool prev) { return now && !prev; }
 static float apply_deadzone(float v) {
     if (v > -0.22f && v < 0.22f) return 0.0f;
     return clampf(v, -1.0f, 1.0f);
+}
+
+// ---------------------------------------------------------------------
+// FPS meter — real wall-clock frame time (CLOCK_MONOTONIC), not the nominal
+// 60.0 the core reports in retro_get_system_av_info. Smoothed so it reads
+// steadily instead of jittering every frame.
+// ---------------------------------------------------------------------
+static float s_fps = 0.0f;
+static struct timespec s_fps_last;
+static bool s_fps_has_last = false;
+
+static void update_fps(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (s_fps_has_last) {
+        double dt = (double)(now.tv_sec - s_fps_last.tv_sec) + (double)(now.tv_nsec - s_fps_last.tv_nsec) * 1e-9;
+        if (dt > 0.0005) {
+            float instant = (float)(1.0 / dt);
+            s_fps = (s_fps <= 0.0f) ? instant : lerpf(s_fps, instant, 0.1f);
+        }
+    }
+    s_fps_last = now;
+    s_fps_has_last = true;
 }
 
 // ---------------------------------------------------------------------
@@ -1663,11 +1687,15 @@ static void draw_hud(int width, int height) {
         snprintf(buf, sizeof(buf), "%dC", g.profile.credits);
         text_draw((float)width - 90.0f, 34.0f, 14.0f, C_CYAN[0], C_CYAN[1], C_CYAN[2], C_CYAN[3], buf, width, height);
     }
+
+    snprintf(buf, sizeof(buf), "%d FPS", (int)(s_fps + 0.5f));
+    text_draw((float)width - text_width(buf, 14.0f) - 16.0f, 14.0f, 14.0f, C_DIM[0], C_DIM[1], C_DIM[2], C_DIM[3], buf, width, height);
 }
 
 void game_render(unsigned int fbo, int width, int height) {
     if (!g.gl_ready) return;
 
+    update_fps();
     gl_begin_frame(fbo, width, height, SPACE_COLOR[0], SPACE_COLOR[1], SPACE_COLOR[2]);
 
     float sx = 0.0f, sy = 0.0f;
