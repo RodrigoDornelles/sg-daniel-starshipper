@@ -7,6 +7,7 @@
 // /dev/null and the core still runs.
 #include "libretro.h"
 #include "gl.h"
+#include "text.h"
 #include "game.h"
 
 #include <limits.h>
@@ -29,11 +30,13 @@ static void RETRO_CALLCONV core_context_reset(void) {
                     hw_render.context_type == RETRO_HW_CONTEXT_OPENGLES3 ||
                     hw_render.context_type == RETRO_HW_CONTEXT_OPENGLES_VERSION);
     gl_backend_init((gl_proc_address_fn)hw_render.get_proc_address, is_gles);
+    text_backend_init();
     game_gl_ready();
 }
 
 static void RETRO_CALLCONV core_context_destroy(void) {
     game_gl_shutdown();
+    text_backend_shutdown();
     gl_backend_shutdown();
 }
 
@@ -118,13 +121,17 @@ RETRO_API void retro_run(void) {
     if (input_state_cb) {
         in.stick_x = (float)input_state_cb(0, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_X) / 32767.0f;
         in.stick_y = (float)input_state_cb(0, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_Y) / 32767.0f;
-        in.fire_held = input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B) != 0 ||
-                       input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R) != 0;
-        in.boost_held = input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R2) != 0;
-        in.brake_held = input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L2) != 0;
-        in.confirm_held = input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B) != 0 ||
-                          input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START) != 0;
-        in.quit_held = input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X) != 0;
+        in.b_held     = input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B) != 0;
+        in.start_held = input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START) != 0;
+        in.x_held     = input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X) != 0;
+        in.l1_held    = input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L) != 0;
+        in.r1_held    = input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R) != 0;
+        in.l2_held    = input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L2) != 0;
+        in.r2_held    = input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R2) != 0;
+        in.up_held    = input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP) != 0;
+        in.down_held  = input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN) != 0;
+        in.left_held  = input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT) != 0;
+        in.right_held = input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT) != 0;
     }
 
     unsigned int fbo = hw_render.get_current_framebuffer ? (unsigned int)hw_render.get_current_framebuffer() : 0u;
@@ -158,5 +165,9 @@ RETRO_API bool retro_unserialize(const void *data, size_t size) { (void)data; (v
 RETRO_API void retro_cheat_reset(void) {}
 RETRO_API void retro_cheat_set(unsigned index, bool enabled, const char *code) { (void)index; (void)enabled; (void)code; }
 
-RETRO_API void *retro_get_memory_data(unsigned id) { (void)id; return NULL; }
-RETRO_API size_t retro_get_memory_size(unsigned id) { (void)id; return 0; }
+RETRO_API void *retro_get_memory_data(unsigned id) {
+    return id == RETRO_MEMORY_SAVE_RAM ? game_get_save_data() : NULL;
+}
+RETRO_API size_t retro_get_memory_size(unsigned id) {
+    return id == RETRO_MEMORY_SAVE_RAM ? game_get_save_size() : 0;
+}

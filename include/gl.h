@@ -52,4 +52,9 @@ void gl_draw_quad2d(float x, float y, float w, float h, float r, float g, float 
 void gl_draw_triangle2d(float x0, float y0, float x1, float y1, float x2, float y2,
                          float r, float g, float b, float a, int screen_w, int screen_h);
 
+// One draw call for an arbitrary batch of pre-built 2D triangles (pixel
+// space, same convention as gl_draw_quad2d) — for callers that want to
+// submit many quads/triangles without one upload per shape.
+void gl_draw_batch2d(const GlVertex *verts, int count, int screen_w, int screen_h);
+
 #endif

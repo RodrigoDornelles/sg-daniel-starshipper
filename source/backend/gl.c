@@ -4,31 +4,12 @@
 #include <stddef.h>
 #include <string.h>
 
-// ---------------------------------------------------------------------------
-// Shaders — no #version pragma and precision guarded by GL_ES so the same
-// source compiles unmodified under desktop GL2.1 and GLES2.
-// ---------------------------------------------------------------------------
-static const char *k_vertex_shader_src =
-    "#ifdef GL_ES\n"
-    "precision highp float;\n"
-    "#endif\n"
-    "attribute vec3 aPosition;\n"
-    "attribute vec4 aColor;\n"
-    "uniform mat4 uMVP;\n"
-    "varying vec4 vColor;\n"
-    "void main() {\n"
-    "    gl_Position = uMVP * vec4(aPosition, 1.0);\n"
-    "    vColor = aColor;\n"
-    "}\n";
-
-static const char *k_fragment_shader_src =
-    "#ifdef GL_ES\n"
-    "precision mediump float;\n"
-    "#endif\n"
-    "varying vec4 vColor;\n"
-    "void main() {\n"
-    "    gl_FragColor = vColor;\n"
-    "}\n";
+// GLSL sources live in source/shaders/*.{vert,frag} and get baked into these
+// arrays by tools/xxd.c at build time (see CMakeLists.txt) — no #version
+// pragma, precision guarded by GL_ES, so they compile unmodified under
+// desktop GL2.1 and GLES2.
+#include "gecnd/shader_basic_vert.h"
+#include "gecnd/shader_basic_frag.h"
 
 static struct {
     unsigned int program;
@@ -38,9 +19,9 @@ static struct {
     bool initialized;
 } g_gl;
 
-static unsigned int compile_shader(unsigned int type, const char *src) {
+static unsigned int compile_shader(unsigned int type, const char *src, int len) {
     unsigned int shader = glCreateShader(type);
-    glShaderSource(shader, 1, &src, NULL);
+    glShaderSource(shader, 1, &src, &len);
     glCompileShader(shader);
     int ok = 0;
     glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
@@ -56,8 +37,8 @@ bool gl_backend_init(gl_proc_address_fn get_proc_address, bool is_gles) {
                          : gladLoadGL((GLADloadfunc)get_proc_address);
     if (!loaded) return false;
 
-    unsigned int vs = compile_shader(GL_VERTEX_SHADER, k_vertex_shader_src);
-    unsigned int fs = compile_shader(GL_FRAGMENT_SHADER, k_fragment_shader_src);
+    unsigned int vs = compile_shader(GL_VERTEX_SHADER, (const char *)SHADER_BASIC_VERT_SRC, (int)SHADER_BASIC_VERT_SRC_len);
+    unsigned int fs = compile_shader(GL_FRAGMENT_SHADER, (const char *)SHADER_BASIC_FRAG_SRC, (int)SHADER_BASIC_FRAG_SRC_len);
     if (!vs || !fs) return false;
 
     unsigned int program = glCreateProgram();
@@ -81,9 +62,6 @@ bool gl_backend_init(gl_proc_address_fn get_proc_address, bool is_gles) {
     g_gl.view_proj = mat4_identity();
     glGenBuffers(1, &g_gl.dynamic_vbo);
 
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
     g_gl.initialized = true;
     return true;
 }
@@ -94,9 +72,16 @@ void gl_backend_shutdown(void) {
     memset(&g_gl, 0, sizeof(g_gl));
 }
 
+// Re-asserts blend/depth state every frame rather than relying on it
+// surviving from context_reset: the frontend's own GL usage between our
+// retro_run() calls (menu, overlay, its own HW-render bookkeeping) is free
+// to leave blending disabled, which otherwise silently turns every alpha-
+// tested draw (HUD quads, text) into a fully opaque one.
 void gl_begin_frame(unsigned int fbo, int width, int height, float clear_r, float clear_g, float clear_b) {
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glViewport(0, 0, width, height);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_TRUE);
     glClearColor(clear_r, clear_g, clear_b, 1.0f);
     glClearDepthf(1.0f);
@@ -165,7 +150,8 @@ void gl_mesh_draw(const GlMesh *mesh, Mat4 model) {
     unbind_vertex_layout();
 }
 
-static void draw2d_flush(const GlVertex *verts, int count, int screen_w, int screen_h) {
+void gl_draw_batch2d(const GlVertex *verts, int count, int screen_w, int screen_h) {
+    if (count <= 0) return;
     glDisable(GL_DEPTH_TEST);
     glUseProgram(g_gl.program);
     Mat4 proj = mat4_ortho(0.0f, (float)screen_w, (float)screen_h, 0.0f);
@@ -186,7 +172,7 @@ void gl_draw_quad2d(float x, float y, float w, float h, float r, float g, float 
         {x + w, y + h, 0, r, g, b, a},
         {x,     y + h, 0, r, g, b, a},
     };
-    draw2d_flush(v, 6, screen_w, screen_h);
+    gl_draw_batch2d(v, 6, screen_w, screen_h);
 }
 
 void gl_draw_triangle2d(float x0, float y0, float x1, float y1, float x2, float y2,
@@ -196,5 +182,5 @@ void gl_draw_triangle2d(float x0, float y0, float x1, float y1, float x2, float 
         {x1, y1, 0, r, g, b, a},
         {x2, y2, 0, r, g, b, a},
     };
-    draw2d_flush(v, 3, screen_w, screen_h);
+    gl_draw_batch2d(v, 3, screen_w, screen_h);
 }
