@@ -6,14 +6,20 @@
 
 // Raw per-frame input state — game logic owns edge-detection (justPressed)
 // on top of this, since it already keeps per-frame state for everything else
-// and buttons mean different things in different states (R1 fires in PLAY,
-// switches hangar tabs in HANGAR).
+// and buttons mean different things in different states.
+//
+// Friendly, minimal scheme:
+//   A     - go / confirm / fire (menu: start run, hangar: select, play: fire)
+//   START - open/close the hangar (config) menu
+//   B     - boost (also R2)             L2 - brake
+//   D-pad - menu cursor: up to reach the tab row, left/right to pick a tab
+//           or a part slot, A to enter/confirm
 typedef struct {
     float stick_x; // -1..1, right positive
     float stick_y; // -1..1, down positive (matches source/main.js pad.ly convention)
-    bool b_held;     // CROSS
-    bool start_held;
-    bool x_held;     // TRIANGLE
+    bool a_held;     // go / confirm / fire
+    bool b_held;     // boost
+    bool start_held; // open/close hangar
     bool l1_held;
     bool r1_held;
     bool l2_held;

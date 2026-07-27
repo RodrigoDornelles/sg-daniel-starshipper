@@ -536,6 +536,7 @@ typedef struct {
     ShipStats stats;
 
     int hangTab, hangSel, partSlot, hangNavLock;
+    bool hangFocusTabs; // cursor is on the tab row (true) or browsing the list (false)
 
     Star stars[STAR_COUNT];
     Planet planets[MAX_PLANETS];
@@ -1151,9 +1152,16 @@ static void award_run_credits(void) {
 }
 
 static void update_play(const GameInput *input) {
+    // D-pad works as a digital fallback/override for the analog stick — full
+    // deflection while held, so the ship is flyable without an analog input.
     float ix = apply_deadzone(input->stick_x);
     float iy = apply_deadzone(input->stick_y);
-    g.boosting = input->r2_held;
+    if (input->left_held) ix = -1.0f;
+    else if (input->right_held) ix = 1.0f;
+    if (input->up_held) iy = -1.0f;
+    else if (input->down_held) iy = 1.0f;
+
+    g.boosting = input->b_held || input->r2_held;
     bool braking = input->l2_held;
 
     float target_speed = BASE_SPEED * g.stats.speed + (float)g.wave * 0.03f;
@@ -1169,7 +1177,7 @@ static void update_play(const GameInput *input) {
     g.pitch = lerpf(g.pitch, -iy * 0.35f, 0.2f);
 
     if (g.fireTimer > 0) g.fireTimer--;
-    bool fire_held = input->b_held || input->r1_held;
+    bool fire_held = input->a_held || input->r1_held;
     if (fire_held && g.fireTimer == 0) {
         fire_bullet();
         g.fireTimer = g.stats.cooldown;
@@ -1287,72 +1295,104 @@ static void update_play(const GameInput *input) {
     g.frame++;
 }
 
+// Cursor-style nav: on the tab row, left/right pick a tab and A (or down)
+// enters it; in the list, up at the top row climbs back to the tab row.
+// No shoulder buttons involved — just the d-pad and A.
 static void update_hangar(const GameInput *input) {
     if (g.hangNavLock > 0) g.hangNavLock--;
 
-    bool l1_edge = edge(input->l1_held, g.prev_input.l1_held);
-    bool r1_edge = edge(input->r1_held, g.prev_input.r1_held);
     bool left_edge = edge(input->left_held, g.prev_input.left_held);
     bool right_edge = edge(input->right_held, g.prev_input.right_held);
     bool up_edge = edge(input->up_held, g.prev_input.up_held);
     bool down_edge = edge(input->down_held, g.prev_input.down_held);
-    bool confirm_edge = edge(input->b_held, g.prev_input.b_held);
+    bool confirm_edge = edge(input->a_held, g.prev_input.a_held);
 
-    if (l1_edge) { g.hangTab = (g.hangTab + HANGAR_TAB_COUNT - 1) % HANGAR_TAB_COUNT; g.hangSel = 0; g.hangNavLock = 12; }
-    if (r1_edge) { g.hangTab = (g.hangTab + 1) % HANGAR_TAB_COUNT; g.hangSel = 0; g.hangNavLock = 12; }
+    if (g.hangFocusTabs) {
+        if (g.hangNavLock == 0) {
+            if (left_edge) { g.hangTab = (g.hangTab + HANGAR_TAB_COUNT - 1) % HANGAR_TAB_COUNT; g.hangNavLock = 10; }
+            if (right_edge) { g.hangTab = (g.hangTab + 1) % HANGAR_TAB_COUNT; g.hangNavLock = 10; }
+        }
+        if (confirm_edge || down_edge) {
+            if (g.hangTab == HANGAR_TAB_LAUNCH) {
+                hangar_confirm();
+            } else {
+                g.hangFocusTabs = false;
+                g.hangSel = 0;
+                g.hangNavLock = 10;
+            }
+        }
+        return;
+    }
 
-    if (g.hangTab == HANGAR_TAB_PARTS) {
-        if (left_edge) { g.partSlot = (g.partSlot + PART_SLOT_COUNT - 1) % PART_SLOT_COUNT; g.hangSel = 0; g.hangNavLock = 12; }
-        if (right_edge) { g.partSlot = (g.partSlot + 1) % PART_SLOT_COUNT; g.hangSel = 0; g.hangNavLock = 12; }
+    if (g.hangTab == HANGAR_TAB_PARTS && g.hangNavLock == 0) {
+        if (left_edge) { g.partSlot = (g.partSlot + PART_SLOT_COUNT - 1) % PART_SLOT_COUNT; g.hangSel = 0; g.hangNavLock = 10; }
+        if (right_edge) { g.partSlot = (g.partSlot + 1) % PART_SLOT_COUNT; g.hangSel = 0; g.hangNavLock = 10; }
     }
 
     int count = hangar_list_count();
-    if (count > 0 && g.hangNavLock == 0) {
-        if (up_edge) { g.hangSel = (g.hangSel + count - 1) % count; g.hangNavLock = 10; }
-        if (down_edge) { g.hangSel = (g.hangSel + 1) % count; g.hangNavLock = 10; }
+    if (g.hangNavLock == 0) {
+        if (up_edge) {
+            if (count > 0 && g.hangSel > 0) g.hangSel--;
+            else g.hangFocusTabs = true;
+            g.hangNavLock = 10;
+        }
+        if (down_edge && count > 0) {
+            g.hangSel = (g.hangSel + 1) % count;
+            g.hangNavLock = 10;
+        }
     }
 
     if (confirm_edge) hangar_confirm();
 }
 
 void game_update(const GameInput *input) {
-    bool confirm_edge = edge(input->b_held, g.prev_input.b_held) || edge(input->start_held, g.prev_input.start_held);
-    bool quit_edge = edge(input->x_held, g.prev_input.x_held);
+    bool confirm_edge = edge(input->a_held, g.prev_input.a_held);
+    bool start_edge = edge(input->start_held, g.prev_input.start_held);
 
     if (g.shake > 0.0f) { g.shake -= 0.06f; if (g.shake < 0.0f) g.shake = 0.0f; }
-
-    if (quit_edge && g.state != STATE_MENU) {
-        g.state = STATE_MENU;
-        g.prev_input = *input;
-        return;
-    }
 
     switch (g.state) {
         case STATE_MENU:
             g.menuSpin += 0.02f;
             update_world(BASE_SPEED * 0.4f);
             if (confirm_edge) {
+                start_run();
+            } else if (start_edge) {
                 g.state = STATE_HANGAR;
                 g.hangTab = HANGAR_TAB_SHIPS;
                 g.hangSel = 0;
                 g.partSlot = 0;
+                g.hangFocusTabs = true;
+                g.hangNavLock = 0;
             }
             break;
         case STATE_HANGAR:
             g.menuSpin += 0.02f;
             update_world(BASE_SPEED * 0.25f);
-            update_hangar(input);
+            if (start_edge) {
+                g.state = STATE_MENU;
+            } else {
+                update_hangar(input);
+            }
             break;
         case STATE_OVER:
             update_world(BASE_SPEED * 0.4f);
             if (confirm_edge) {
+                start_run();
+            } else if (start_edge) {
                 g.state = STATE_HANGAR;
                 g.hangTab = HANGAR_TAB_LAUNCH;
                 g.hangSel = 0;
+                g.hangFocusTabs = true;
+                g.hangNavLock = 0;
             }
             break;
         default: // STATE_PLAY
-            update_play(input);
+            if (start_edge) {
+                g.state = STATE_MENU;
+            } else {
+                update_play(input);
+            }
             break;
     }
 
@@ -1496,6 +1536,10 @@ static void draw_hangar_ui(int width, int height) {
 
     gl_draw_quad2d(px, 30.0f, pw, (float)height - 38.0f, 0.06f, 0.09f, 0.15f, 0.85f, width, height);
 
+    if (g.hangFocusTabs) {
+        float hx = px + 6.0f + (float)g.hangTab * 86.0f - 4.0f;
+        gl_draw_quad2d(hx, 4.0f, 78.0f, 20.0f, 0.16f, 0.24f, 0.39f, 0.63f, width, height);
+    }
     float tx = px + 6.0f;
     for (int t = 0; t < HANGAR_TAB_COUNT; t++) {
         const float *c = (t == g.hangTab) ? C_YELLOW : C_DIM;
@@ -1517,8 +1561,8 @@ static void draw_hangar_ui(int width, int height) {
         text_draw(px + 8.0f, 138.0f, 13.0f, C_DIM[0], C_DIM[1], C_DIM[2], C_DIM[3], buf, width, height);
         snprintf(buf, sizeof(buf), "SHOTS %d  RATE %df", rs.bullets, rs.cooldown);
         text_draw(px + 8.0f, 158.0f, 13.0f, C_DIM[0], C_DIM[1], C_DIM[2], C_DIM[3], buf, width, height);
-        text_draw(px + 8.0f, 192.0f, 16.0f, C_YELLOW[0], C_YELLOW[1], C_YELLOW[2], C_YELLOW[3], "CROSS = LAUNCH", width, height);
-        text_draw(px + 8.0f, 214.0f, 13.0f, C_DIM[0], C_DIM[1], C_DIM[2], C_DIM[3], "L1/R1 TABS - TRIANGLE QUIT", width, height);
+        text_draw(px + 8.0f, 192.0f, 16.0f, C_YELLOW[0], C_YELLOW[1], C_YELLOW[2], C_YELLOW[3], "A = LAUNCH", width, height);
+        text_draw(px + 8.0f, 214.0f, 13.0f, C_DIM[0], C_DIM[1], C_DIM[2], C_DIM[3], "ARROWS + A NAVIGATE - START MENU", width, height);
         return;
     }
 
@@ -1533,7 +1577,7 @@ static void draw_hangar_ui(int width, int height) {
     int count = hangar_list_count();
     for (int i = 0; i < maxRows && i < count; i++) {
         float y = listY + (float)i * rowH;
-        bool sel = (i == g.hangSel);
+        bool sel = !g.hangFocusTabs && (i == g.hangSel);
         if (sel) gl_draw_quad2d(px + 4.0f, y - 2.0f, pw - 8.0f, rowH - 2.0f, 0.16f, 0.24f, 0.39f, 0.63f, width, height);
 
         const char *label = "";
@@ -1575,7 +1619,7 @@ static void draw_hangar_ui(int width, int height) {
         }
     }
 
-    text_draw(px + 8.0f, (float)height - 22.0f, 13.0f, C_DIM[0], C_DIM[1], C_DIM[2], C_DIM[3], "CROSS BUY/EQUIP - L1/R1 TAB", width, height);
+    text_draw(px + 8.0f, (float)height - 22.0f, 13.0f, C_DIM[0], C_DIM[1], C_DIM[2], C_DIM[3], "ARROWS + A NAVIGATE - START MENU", width, height);
 }
 
 static void draw_hud(int width, int height) {
@@ -1591,12 +1635,12 @@ static void draw_hud(int width, int height) {
         const char *title = "STAR FOX";
         float title_w = text_width(title, 32.0f);
         text_draw((float)width * 0.5f - title_w * 0.5f, 150.0f, 32.0f, C_WHITE[0], C_WHITE[1], C_WHITE[2], C_WHITE[3], title, width, height);
-        const char *hint = "PRESS CROSS FOR HANGAR";
+        const char *hint = "PRESS A TO START";
         float hint_w = text_width(hint, 18.0f);
         text_draw((float)width * 0.5f - hint_w * 0.5f, 200.0f, 18.0f, C_YELLOW[0], C_YELLOW[1], C_YELLOW[2], C_YELLOW[3], hint, width, height);
-        const char *l1 = "LEFT STICK STEER - CROSS/R1 FIRE";
+        const char *l1 = "START TO CONFIGURE YOUR SHIP";
         text_draw((float)width * 0.5f - text_width(l1, 14.0f) * 0.5f, 230.0f, 14.0f, C_DIM[0], C_DIM[1], C_DIM[2], C_DIM[3], l1, width, height);
-        const char *l2 = "R2 BOOST - L2 BRAKE - TRIANGLE QUIT";
+        const char *l2 = "STICK/D-PAD STEER - A FIRE - B BOOST - L2 BRAKE";
         text_draw((float)width * 0.5f - text_width(l2, 14.0f) * 0.5f, 250.0f, 14.0f, C_DIM[0], C_DIM[1], C_DIM[2], C_DIM[3], l2, width, height);
     } else if (g.state == STATE_HANGAR) {
         draw_hangar_ui(width, height);
@@ -1609,8 +1653,10 @@ static void draw_hud(int width, int height) {
         text_draw((float)width * 0.5f - text_width(buf, 16.0f) * 0.5f, 200.0f, 16.0f, C_CYAN[0], C_CYAN[1], C_CYAN[2], C_CYAN[3], buf, width, height);
         snprintf(buf, sizeof(buf), "BANK %d", g.profile.credits);
         text_draw((float)width * 0.5f - text_width(buf, 14.0f) * 0.5f, 222.0f, 14.0f, C_DIM[0], C_DIM[1], C_DIM[2], C_DIM[3], buf, width, height);
-        const char *cta = "CROSS = HANGAR";
+        const char *cta = "A = PLAY AGAIN";
         text_draw((float)width * 0.5f - text_width(cta, 16.0f) * 0.5f, 250.0f, 16.0f, C_YELLOW[0], C_YELLOW[1], C_YELLOW[2], C_YELLOW[3], cta, width, height);
+        const char *cfg = "START = CONFIGURE SHIP";
+        text_draw((float)width * 0.5f - text_width(cfg, 13.0f) * 0.5f, 272.0f, 13.0f, C_DIM[0], C_DIM[1], C_DIM[2], C_DIM[3], cfg, width, height);
     } else {
         draw_lives(width, height);
         draw_boost_bar(width, height);
