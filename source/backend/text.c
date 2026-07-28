@@ -13,9 +13,21 @@
 #include <string.h>
 
 #include "gecnd/tamzen_5x9_regular.h"
-#include "gecnd/tamzen_5x9_bold.h"
+//#include "gecnd/tamzen_5x9_bold.h"
 #include "gecnd/shader_text_vert.h"
 #include "gecnd/shader_text_frag.h"
+
+#ifndef TAMZEN_5X9_BOLD_GLYPHS
+#define TAMZEN_5X9_BOLD_GLYPHS TAMZEN_5X9_REGULAR_GLYPHS
+#endif
+
+#ifndef TAMZEN_5X9_BOLD_PIXELS
+#define TAMZEN_5X9_BOLD_PIXELS TAMZEN_5X9_REGULAR_PIXELS
+#endif
+
+#ifndef TAMZEN_5X9_BOLD_ASCENT
+#define TAMZEN_5X9_BOLD_ASCENT TAMZEN_5X9_REGULAR_ASCENT 
+#endif
 
 typedef struct {
     float x, y, u, v, r, g, b, a;
