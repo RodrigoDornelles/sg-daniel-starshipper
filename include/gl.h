@@ -37,6 +37,7 @@ void gl_backend_shutdown(void);
 
 // Binds `fbo` (0 = default), sets the viewport and clears color+depth.
 void gl_begin_frame(unsigned int fbo, int width, int height, float clear_r, float clear_g, float clear_b);
+void gl_set_viewport(int x, int y, int width, int height);
 
 // view/proj are combined once per frame; gl_mesh_draw multiplies by model.
 void gl_set_camera(Mat4 view, Mat4 proj);

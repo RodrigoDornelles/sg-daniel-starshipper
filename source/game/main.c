@@ -1722,18 +1722,21 @@ static void draw_hud(int width, int height) {
     text_draw((float)width - text_width(buf, 14.0f) - 16.0f, 14.0f, 14.0f, C_DIM[0], C_DIM[1], C_DIM[2], C_DIM[3], buf, width, height);
 }
 
-void game_render(unsigned int fbo, int width, int height) {
+void game_render(unsigned int fbo, int width, int height, int dead_w, int dead_h) {
     if (!g.gl_ready) return;
 
     update_fps();
     gl_begin_frame(fbo, width, height, SPACE_COLOR[0], SPACE_COLOR[1], SPACE_COLOR[2]);
+
+    int safe_w = width - dead_w, safe_h = height - dead_h;
+    gl_set_viewport(dead_w / 2, dead_h / 2, safe_w, safe_h);
 
     float sx = 0.0f, sy = 0.0f;
     if (g.shake > 0.0f) { sx = randf(-g.shake, g.shake) * 0.6f; sy = randf(-g.shake, g.shake) * 0.6f; }
     float camX = CAM_X + sx, camY = CAM_Y + sy, camZ = CAM_Z;
 
     Mat4 view = mat4_look_at(camX, camY, camZ, LOOK_X, LOOK_Y, LOOK_Z, 0.0f, 1.0f, 0.0f);
-    Mat4 proj = mat4_perspective(72.0f, (float)width / (float)height, 0.5f, 900.0f);
+    Mat4 proj = mat4_perspective(72.0f, (float)safe_w / (float)safe_h, 0.5f, 900.0f);
     gl_set_camera(view, proj);
 
     render_planets(camX, camY, camZ);
@@ -1746,5 +1749,5 @@ void game_render(unsigned int fbo, int width, int height) {
     bool show_ship = (g.state != STATE_PLAY) || (g.invuln <= 0) || (((g.invuln / 6) % 2) == 0);
     render_ship_and_thruster(show_ship);
 
-    draw_hud(width, height);
+    draw_hud(safe_w, safe_h);
 }

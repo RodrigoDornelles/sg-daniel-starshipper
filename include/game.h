@@ -41,7 +41,7 @@ void game_gl_ready(void);
 void game_gl_shutdown(void);
 
 void game_update(const GameInput *input);
-void game_render(unsigned int fbo, int width, int height);
+void game_render(unsigned int fbo, int width, int height, int dead_w, int dead_h);
 
 // Backing store for RETRO_MEMORY_SAVE_RAM: credits + best score. The
 // frontend memcpy's a prior .srm into this buffer right after

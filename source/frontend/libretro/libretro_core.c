@@ -1,4 +1,4 @@
-// StartShipper libretro core.
+// SpaceShipper libretro core.
 //
 // The "content" retro_load_game() receives is irrelevant — this core carries
 // its own game (source/main.js, in the process of being ported to game.c)
@@ -16,8 +16,8 @@
 #include <stdio.h>
 #include <string.h>
 
-#define SCREEN_W 640u
-#define SCREEN_H 480u
+#define DEFAULT_SCREEN_W 640u
+#define DEFAULT_SCREEN_H 480u
 
 // 44100 / 60 == 735 exactly, so a fixed-size buffer needs no fractional
 // carry-over between retro_run() calls.
@@ -32,6 +32,11 @@ static retro_input_poll_t input_poll_cb;
 static retro_input_state_t input_state_cb;
 
 static struct retro_hw_render_callback hw_render;
+static bool audio_enabled = true;
+static uint16_t screen_w = DEFAULT_SCREEN_W;
+static uint16_t screen_h = DEFAULT_SCREEN_H;
+static uint16_t deadscreen_w = 32u;
+static uint16_t deadscreen_h = 32u;
 
 static void RETRO_CALLCONV core_context_reset(void) {
     bool is_gles = (hw_render.context_type == RETRO_HW_CONTEXT_OPENGLES2 ||
@@ -44,11 +49,11 @@ static void RETRO_CALLCONV core_context_reset(void) {
     // no-ops instead of drawing with program 0 (which is silent on desktop
     // Mesa's fixed-function fallback but draws nothing at all on real GLES2).
     if (!gl_backend_init((gl_proc_address_fn)hw_render.get_proc_address, is_gles)) {
-        fprintf(stderr, "[startshipper] core_context_reset: gl_backend_init failed, not rendering 3D\n");
+        fprintf(stderr, "[spaceshipper] core_context_reset: gl_backend_init failed, not rendering 3D\n");
         return;
     }
     if (!text_backend_init()) {
-        fprintf(stderr, "[startshipper] core_context_reset: text_backend_init failed, HUD text will be missing\n");
+        fprintf(stderr, "[spaceshipper] core_context_reset: text_backend_init failed, HUD text will be missing\n");
     }
     game_gl_ready();
 }
@@ -64,6 +69,43 @@ RETRO_API void retro_set_environment(retro_environment_t cb) {
 
     bool no_game = true;
     cb(RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME, &no_game);
+
+    static const struct retro_variable vars[] = {
+        { "spaceshipper_audio", "Audio; enabled|disabled" },
+        { "spaceshipper_resolution", "Resolution; 640x480|320x240|960x720|1280x960" },
+        { "spaceshipper_deadscreen", "Dead zone (TV overscan); 32x32|0x0|48x36|64x48" },
+        { NULL, NULL },
+    };
+    cb(RETRO_ENVIRONMENT_SET_VARIABLES, (void *)vars);
+}
+
+static void poll_audio_option(void) {
+    struct retro_variable var = { "spaceshipper_audio", NULL };
+    if (environ_cb && environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
+        audio_enabled = strcmp(var.value, "disabled") != 0;
+    }
+}
+
+static void poll_resolution_option(void) {
+    struct retro_variable var = { "spaceshipper_resolution", NULL };
+    if (environ_cb && environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
+        unsigned w = 0, h = 0;
+        if (sscanf(var.value, "%ux%u", &w, &h) == 2 && w > 0 && h > 0 && w <= UINT16_MAX && h <= UINT16_MAX) {
+            screen_w = (uint16_t)w;
+            screen_h = (uint16_t)h;
+        }
+    }
+}
+
+static void poll_deadscreen_option(void) {
+    struct retro_variable var = { "spaceshipper_deadscreen", NULL };
+    if (environ_cb && environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
+        unsigned w = 0, h = 0;
+        if (sscanf(var.value, "%ux%u", &w, &h) == 2 && w <= UINT16_MAX && h <= UINT16_MAX) {
+            deadscreen_w = (uint16_t)w;
+            deadscreen_h = (uint16_t)h;
+        }
+    }
 }
 
 // libretro.h documents RETRO_ENVIRONMENT_SET_HW_RENDER as "should be called
@@ -112,7 +154,7 @@ RETRO_API unsigned retro_api_version(void) { return RETRO_API_VERSION; }
 
 RETRO_API void retro_get_system_info(struct retro_system_info *info) {
     memset(info, 0, sizeof(*info));
-    info->library_name = "StartShipper";
+    info->library_name = "SpaceShipper";
     info->library_version = "0.1";
     info->valid_extensions = NULL;
     info->need_fullpath = false;
@@ -121,11 +163,11 @@ RETRO_API void retro_get_system_info(struct retro_system_info *info) {
 
 RETRO_API void retro_get_system_av_info(struct retro_system_av_info *info) {
     memset(info, 0, sizeof(*info));
-    info->geometry.base_width = SCREEN_W;
-    info->geometry.base_height = SCREEN_H;
-    info->geometry.max_width = SCREEN_W;
-    info->geometry.max_height = SCREEN_H;
-    info->geometry.aspect_ratio = (float)SCREEN_W / (float)SCREEN_H;
+    info->geometry.base_width = screen_w;
+    info->geometry.base_height = screen_h;
+    info->geometry.max_width = screen_w;
+    info->geometry.max_height = screen_h;
+    info->geometry.aspect_ratio = (float)screen_w / (float)screen_h;
     info->timing.fps = 60.0;
     info->timing.sample_rate = 44100.0;
 }
@@ -156,11 +198,11 @@ RETRO_API void retro_run(void) {
     unsigned int fbo = hw_render.get_current_framebuffer ? (unsigned int)hw_render.get_current_framebuffer() : 0u;
 
     game_update(&in);
-    game_render(fbo, (int)SCREEN_W, (int)SCREEN_H);
+    game_render(fbo, (int)screen_w, (int)screen_h, (int)deadscreen_w, (int)deadscreen_h);
 
-    if (video_cb) video_cb(RETRO_HW_FRAME_BUFFER_VALID, SCREEN_W, SCREEN_H, 0);
+    if (video_cb) video_cb(RETRO_HW_FRAME_BUFFER_VALID, screen_w, screen_h, 0);
 
-    if (audio_batch_cb) {
+    if (audio_enabled && audio_batch_cb) {
         static int16_t audio_buf[AUDIO_FRAMES_PER_RUN * 2];
         audio_generate(audio_buf, AUDIO_FRAMES_PER_RUN);
         audio_batch_cb(audio_buf, AUDIO_FRAMES_PER_RUN);
@@ -170,6 +212,9 @@ RETRO_API void retro_run(void) {
 RETRO_API bool retro_load_game(const struct retro_game_info *info) {
     (void)info; // content is intentionally ignored — /dev/null works fine.
     negotiate_hw_render();
+    poll_audio_option();
+    poll_resolution_option();
+    poll_deadscreen_option();
     audio_init(AUDIO_SAMPLE_RATE);
     game_init();
     return true;

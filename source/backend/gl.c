@@ -31,7 +31,7 @@ static unsigned int compile_shader(unsigned int type, const char *src, int len, 
         char log[1024];
         int log_len = 0;
         glGetShaderInfoLog(shader, sizeof(log), &log_len, log);
-        fprintf(stderr, "[startshipper] gl: %s shader failed to compile:\n%s\n", tag, log);
+        fprintf(stderr, "[spaceshipper] gl: %s shader failed to compile:\n%s\n", tag, log);
         glDeleteShader(shader);
         return 0;
     }
@@ -65,7 +65,7 @@ bool gl_backend_init(gl_proc_address_fn get_proc_address, bool is_gles) {
         char log[1024];
         int log_len = 0;
         glGetProgramInfoLog(program, sizeof(log), &log_len, log);
-        fprintf(stderr, "[startshipper] gl: basic program failed to link:\n%s\n", log);
+        fprintf(stderr, "[spaceshipper] gl: basic program failed to link:\n%s\n", log);
         glDeleteProgram(program);
         return false;
     }
@@ -76,7 +76,7 @@ bool gl_backend_init(gl_proc_address_fn get_proc_address, bool is_gles) {
     glGenBuffers(1, &g_gl.dynamic_vbo);
 
     g_gl.initialized = true;
-    fprintf(stderr, "[startshipper] gl: backend ready (program=%u u_mvp=%d)\n", g_gl.program, g_gl.u_mvp);
+    fprintf(stderr, "[spaceshipper] gl: backend ready (program=%u u_mvp=%d)\n", g_gl.program, g_gl.u_mvp);
     return true;
 }
 
@@ -104,7 +104,7 @@ void gl_begin_frame(unsigned int fbo, int width, int height, float clear_r, floa
     if (!fbo_checked) {
         fbo_checked = true;
         GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-        fprintf(stderr, "[startshipper] gl: fbo=%u %dx%d status=0x%x%s\n", fbo, width, height, status,
+        fprintf(stderr, "[spaceshipper] gl: fbo=%u %dx%d status=0x%x%s\n", fbo, width, height, status,
                 status == GL_FRAMEBUFFER_COMPLETE ? " (complete)" : " (INCOMPLETE)");
     }
 
@@ -116,6 +116,10 @@ void gl_begin_frame(unsigned int fbo, int width, int height, float clear_r, floa
     glClearDepthf(1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glDepthFunc(GL_LEQUAL);
+}
+
+void gl_set_viewport(int x, int y, int width, int height) {
+    glViewport(x, y, width, height);
 }
 
 void gl_set_camera(Mat4 view, Mat4 proj) {
