@@ -181,6 +181,20 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 set_target_properties(${PROJECT_NAME} PROPERTIES
     PREFIX ""
     OUTPUT_NAME "startshipper_libretro"
+    C_VISIBILITY_PRESET hidden
+    INTERPROCEDURAL_OPTIMIZATION TRUE
+)
+
+target_compile_options(${PROJECT_NAME} PRIVATE
+    -Os
+    -ffunction-sections
+    -fdata-sections
+    -fno-asynchronous-unwind-tables
+)
+target_link_options(${PROJECT_NAME} PRIVATE
+    -Wl,--gc-sections
+    -Wl,--build-id=none
+    -s
 )
 
 if (UNIX)
