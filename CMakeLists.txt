@@ -30,29 +30,27 @@ if (NOT EXISTS "${GLAD_DIR}/include")
     FetchContent_Populate(glad URL ${GLAD_DOWNLOAD} SOURCE_DIR ${GLAD_DIR})
 endif()
 
-# gl.c was generated with --merge --api='gl:core=2.1,gles2=2.0': a single
-# glad_gl* pointer table shared by both a desktop GL2.1 and a GLES2 context.
-# gles2.c/glx.c/wgl.c/egl.c are the legacy standalone loaders — unused here,
-# the libretro frontend already owns context creation.
-set(GLAD_SOURCES "${GLAD_DIR}/src/gl.c")
+# Only glad's headers are used (typedefs, enums, the glad_gl* pointer table +
+# `#define glFoo glad_glFoo` macros) — glad's own generated src/gl.c is NOT
+# compiled: it eagerly resolves every GL 1.0-2.1 + GLES2 entry point (~24KB of
+# .text) whether gl.c/text.c call it or not. source/backend/loadgl.c replaces
+# it with a ~40-entry-point loader covering exactly what this game calls,
+# shared as-is between the desktop GL2.1 and GLES2 context (same subset).
 
 # ---------------------------------------------------------------------------
-# fontstash — HUD/menu text (source/backend/text.c). Header-only + stb_truetype,
-# no font of its own: PressStart2P (OFL) is fetched below and baked into a C
-# array at configure time so the core stays a single self-contained .so with
-# no font file to ship or locate at runtime.
+# Tamzen font — HUD/menu text (source/backend/text.c) draws precomputed
+# glyph bitmaps, no font-format parsing at runtime at all. tools/fonts.c
+# (built below, same host-native pattern as xxd_tool) reads the BDF sources
+# for Tamzen5x9 regular+bold at *build* time and bakes each glyph's pixels +
+# metrics straight into a C header (see include/bitfont.h) — the shipped
+# core never touches BDF/OTB/PCF parsing, just copies bytes into a texture.
 # ---------------------------------------------------------------------------
-set(FONTSTASH_DIR "${CMAKE_SOURCE_DIR}/vendor/mono/fontstash")
-set(FONTSTASH_DOWNLOAD "https://github.com/memononen/fontstash/archive/b5ddc9741061343740d85d636d782ed3e07cf7be.tar.gz")
-if (NOT EXISTS "${FONTSTASH_DIR}")
-    FetchContent_Populate(fontstash URL "${FONTSTASH_DOWNLOAD}" SOURCE_DIR ${FONTSTASH_DIR})
-endif()
-
-set(FONTS_DIR "${CMAKE_SOURCE_DIR}/vendor/fonts")
 set(FONTS_INCLUDE_DIR "${CMAKE_BINARY_DIR}/include/gecnd")
-set(FONTS_DOWNLOAD "https://github.com/gly-engine/archive/archive/refs/heads/fonts.zip")
-if (NOT EXISTS "${FONTS_DIR}")
-    FetchContent_Populate(fonts URL "${FONTS_DOWNLOAD}" SOURCE_DIR ${FONTS_DIR})
+
+set(TAMZEN_DIR "${CMAKE_SOURCE_DIR}/vendor/mono/tamzen-font")
+set(TAMZEN_DOWNLOAD "https://github.com/sunaku/tamzen-font/archive/3255e8259bc9b880c60ab8b737ec8aa574e00d75.tar.gz")
+if (NOT EXISTS "${TAMZEN_DIR}")
+    FetchContent_Populate(tamzen_font URL "${TAMZEN_DOWNLOAD}" SOURCE_DIR ${TAMZEN_DIR})
 endif()
 
 # xxd_tool: generic "xxd -i"-alike — embeds any file as a C byte array.
@@ -97,22 +95,80 @@ function(embed_file INPUT SYMBOL FILENAME OUTVAR)
     set(${OUTVAR} "${_header}" PARENT_SCOPE)
 endfunction()
 
-embed_file("${FONTS_DIR}/Roboto/Roboto-Regular.ttf" GAME_FONT_ROBOTO_REGULAR "roboto_regular.h" ROBOTO_HEADER)
+# fonts_tool: BDF -> C header baker (tools/fonts.c). Same host-native /
+# cross-compile split as xxd_tool above, for the same reason (it must run
+# during the build, on the machine doing the building).
+if (DEFINED TARGET)
+    set(FONTS_TOOL_BIN "${CMAKE_BINARY_DIR}/fonts")
+    add_custom_command(
+        OUTPUT "${FONTS_TOOL_BIN}"
+        COMMAND "${CMAKE_BINARY_DIR}/zig-cc-host" -O2 -o "${FONTS_TOOL_BIN}" "${CMAKE_SOURCE_DIR}/tools/fonts.c"
+        DEPENDS "${CMAKE_SOURCE_DIR}/tools/fonts.c"
+        COMMENT "Building fonts_tool for the host (zig-cc-host)"
+        VERBATIM
+    )
+    add_custom_target(fonts_tool ALL DEPENDS "${FONTS_TOOL_BIN}")
+    set(FONTS_TOOL_CMD "${FONTS_TOOL_BIN}")
+else()
+    add_executable(fonts_tool tools/fonts.c)
+    set(FONTS_TOOL_CMD "$<TARGET_FILE:fonts_tool>")
+endif()
+
+function(bake_font INPUT SYMBOL_PREFIX FILENAME OUTVAR)
+    set(_header "${FONTS_INCLUDE_DIR}/${FILENAME}")
+    add_custom_command(
+        OUTPUT "${_header}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${FONTS_INCLUDE_DIR}"
+        COMMAND ${FONTS_TOOL_CMD} "${INPUT}" "${_header}" "${SYMBOL_PREFIX}"
+        DEPENDS fonts_tool "${INPUT}" "${CMAKE_SOURCE_DIR}/include/bitfont.h"
+        COMMENT "Baking ${FILENAME}"
+        VERBATIM
+    )
+    set(${OUTVAR} "${_header}" PARENT_SCOPE)
+endfunction()
+
+bake_font("${TAMZEN_DIR}/bdf/Tamzen5x9r.bdf" TAMZEN_5X9_REGULAR "tamzen_5x9_regular.h" TAMZEN_REGULAR_HEADER)
+bake_font("${TAMZEN_DIR}/bdf/Tamzen5x9b.bdf" TAMZEN_5X9_BOLD "tamzen_5x9_bold.h" TAMZEN_BOLD_HEADER)
 embed_file("${CMAKE_SOURCE_DIR}/source/shaders/basic.vert" SHADER_BASIC_VERT_SRC "shader_basic_vert.h" BASIC_VERT_HEADER)
 embed_file("${CMAKE_SOURCE_DIR}/source/shaders/basic.frag" SHADER_BASIC_FRAG_SRC "shader_basic_frag.h" BASIC_FRAG_HEADER)
 embed_file("${CMAKE_SOURCE_DIR}/source/shaders/text.vert" SHADER_TEXT_VERT_SRC "shader_text_vert.h" TEXT_VERT_HEADER)
 embed_file("${CMAKE_SOURCE_DIR}/source/shaders/text.frag" SHADER_TEXT_FRAG_SRC "shader_text_frag.h" TEXT_FRAG_HEADER)
 
 add_custom_target(generate_headers DEPENDS
-    "${ROBOTO_HEADER}" "${BASIC_VERT_HEADER}" "${BASIC_FRAG_HEADER}" "${TEXT_VERT_HEADER}" "${TEXT_FRAG_HEADER}")
+    "${TAMZEN_REGULAR_HEADER}" "${TAMZEN_BOLD_HEADER}"
+    "${BASIC_VERT_HEADER}" "${BASIC_FRAG_HEADER}" "${TEXT_VERT_HEADER}" "${TEXT_FRAG_HEADER}")
 
 add_library(${PROJECT_NAME} SHARED
     source/frontend/libretro/libretro_core.c
     source/backend/gl.c
+    source/backend/loadgl.c
     source/backend/math4.c
     source/backend/text.c
     source/game/main.c
-    ${GLAD_SOURCES}
+
+    # Procedural audio engine (source/sound/) - no WAV/OGG assets, everything
+    # below is generated PCM: oscillators -> synth voices -> music/SFX -> mixer.
+    source/sound/audio_rng.c
+    source/sound/osc.c
+    source/sound/envelope.c
+    source/sound/filter.c
+    source/sound/synth.c
+    source/sound/mixer.c
+    source/sound/sfx.c
+    source/sound/audio_device.c
+    source/sound/music/scales.c
+    source/sound/music/bass.c
+    source/sound/music/lead.c
+    source/sound/music/pad.c
+    source/sound/music/drums.c
+    source/sound/music/sequencer.c
+    source/sound/sfx/laser.c
+    source/sound/sfx/explosion.c
+    source/sound/sfx/jump.c
+    source/sound/sfx/pickup.c
+    source/sound/sfx/impact.c
+    source/sound/sfx/ui.c
+    source/sound/sfx/thrust.c
 )
 add_dependencies(${PROJECT_NAME} generate_headers)
 
@@ -123,11 +179,23 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_BINARY_DIR}/include
 )
 
-target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE "${FONTSTASH_DIR}/src")
-
 set_target_properties(${PROJECT_NAME} PROPERTIES
     PREFIX ""
     OUTPUT_NAME "startshipper_libretro"
+    C_VISIBILITY_PRESET hidden
+    INTERPROCEDURAL_OPTIMIZATION TRUE
+)
+
+target_compile_options(${PROJECT_NAME} PRIVATE
+    -Os
+    -ffunction-sections
+    -fdata-sections
+    -fno-asynchronous-unwind-tables
+)
+target_link_options(${PROJECT_NAME} PRIVATE
+    -Wl,--gc-sections
+    -Wl,--build-id=none
+    -s
 )
 
 if (UNIX)
