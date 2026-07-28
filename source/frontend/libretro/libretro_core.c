@@ -11,6 +11,7 @@
 #include "game.h"
 
 #include <limits.h>
+#include <stdio.h>
 #include <string.h>
 
 #define SCREEN_W 640u
@@ -29,8 +30,19 @@ static void RETRO_CALLCONV core_context_reset(void) {
     bool is_gles = (hw_render.context_type == RETRO_HW_CONTEXT_OPENGLES2 ||
                     hw_render.context_type == RETRO_HW_CONTEXT_OPENGLES3 ||
                     hw_render.context_type == RETRO_HW_CONTEXT_OPENGLES_VERSION);
-    gl_backend_init((gl_proc_address_fn)hw_render.get_proc_address, is_gles);
-    text_backend_init();
+
+    // Gated on the real signal (shader compile/link), not glad's own
+    // extension-probe hiccup — see the comment in gl_backend_init(). Skipping
+    // game_gl_ready() on failure keeps g.gl_ready false, so game_render()
+    // no-ops instead of drawing with program 0 (which is silent on desktop
+    // Mesa's fixed-function fallback but draws nothing at all on real GLES2).
+    if (!gl_backend_init((gl_proc_address_fn)hw_render.get_proc_address, is_gles)) {
+        fprintf(stderr, "[startshipper] core_context_reset: gl_backend_init failed, not rendering 3D\n");
+        return;
+    }
+    if (!text_backend_init()) {
+        fprintf(stderr, "[startshipper] core_context_reset: text_backend_init failed, HUD text will be missing\n");
+    }
     game_gl_ready();
 }
 

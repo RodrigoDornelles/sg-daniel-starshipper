@@ -2,6 +2,7 @@
 #include "glad/gl.h"
 
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 
 // GLSL sources live in source/shaders/*.{vert,frag} and get baked into these
@@ -19,13 +20,17 @@ static struct {
     bool initialized;
 } g_gl;
 
-static unsigned int compile_shader(unsigned int type, const char *src, int len) {
+static unsigned int compile_shader(unsigned int type, const char *src, int len, const char *tag) {
     unsigned int shader = glCreateShader(type);
     glShaderSource(shader, 1, &src, &len);
     glCompileShader(shader);
     int ok = 0;
     glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
     if (!ok) {
+        char log[1024];
+        int log_len = 0;
+        glGetShaderInfoLog(shader, sizeof(log), &log_len, log);
+        fprintf(stderr, "[startshipper] gl: %s shader failed to compile:\n%s\n", tag, log);
         glDeleteShader(shader);
         return 0;
     }
@@ -35,10 +40,21 @@ static unsigned int compile_shader(unsigned int type, const char *src, int len) 
 bool gl_backend_init(gl_proc_address_fn get_proc_address, bool is_gles) {
     int loaded = is_gles ? gladLoadGLES2((GLADloadfunc)get_proc_address)
                          : gladLoadGL((GLADloadfunc)get_proc_address);
-    if (!loaded) return false;
+    if (!loaded) {
+        // gladLoadGL{,ES2} returns 0 if ITS OWN extension probe fails
+        // (GL_EXT_discard_framebuffer / GL_OES_compressed_ETC1_RGB8_texture —
+        // neither of which gl.c uses), even though every core function
+        // pointer we actually need is loaded before that probe runs. Seen on
+        // real GLES2 hardware where that probe path doesn't apply; desktop
+        // Mesa's probe succeeds, which is why this never showed up there.
+        // Warn and keep going — if a function we truly need is missing, the
+        // shader compile/link below will fail, and THAT'S the real signal.
+        fprintf(stderr, "[startshipper] gl: %s reported failure (likely just its own extension probe, not the functions we need) — continuing\n",
+                is_gles ? "gladLoadGLES2" : "gladLoadGL");
+    }
 
-    unsigned int vs = compile_shader(GL_VERTEX_SHADER, (const char *)SHADER_BASIC_VERT_SRC, (int)SHADER_BASIC_VERT_SRC_len);
-    unsigned int fs = compile_shader(GL_FRAGMENT_SHADER, (const char *)SHADER_BASIC_FRAG_SRC, (int)SHADER_BASIC_FRAG_SRC_len);
+    unsigned int vs = compile_shader(GL_VERTEX_SHADER, (const char *)SHADER_BASIC_VERT_SRC, (int)SHADER_BASIC_VERT_SRC_len, "basic.vert");
+    unsigned int fs = compile_shader(GL_FRAGMENT_SHADER, (const char *)SHADER_BASIC_FRAG_SRC, (int)SHADER_BASIC_FRAG_SRC_len, "basic.frag");
     if (!vs || !fs) return false;
 
     unsigned int program = glCreateProgram();
@@ -53,6 +69,10 @@ bool gl_backend_init(gl_proc_address_fn get_proc_address, bool is_gles) {
     glDeleteShader(vs);
     glDeleteShader(fs);
     if (!linked) {
+        char log[1024];
+        int log_len = 0;
+        glGetProgramInfoLog(program, sizeof(log), &log_len, log);
+        fprintf(stderr, "[startshipper] gl: basic program failed to link:\n%s\n", log);
         glDeleteProgram(program);
         return false;
     }
@@ -63,6 +83,7 @@ bool gl_backend_init(gl_proc_address_fn get_proc_address, bool is_gles) {
     glGenBuffers(1, &g_gl.dynamic_vbo);
 
     g_gl.initialized = true;
+    fprintf(stderr, "[startshipper] gl: backend ready (program=%u u_mvp=%d)\n", g_gl.program, g_gl.u_mvp);
     return true;
 }
 
@@ -79,6 +100,21 @@ void gl_backend_shutdown(void) {
 // tested draw (HUD quads, text) into a fully opaque one.
 void gl_begin_frame(unsigned int fbo, int width, int height, float clear_r, float clear_g, float clear_b) {
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+
+    // One-shot diagnostic: if the frontend's FBO doesn't actually have a
+    // usable depth attachment on this GPU/driver (some embedded GLES2 parts
+    // are picky about the depth renderbuffer format/combo), every depth-
+    // tested draw silently discards while unlit 2D/text overlays (which
+    // disable depth test) keep working fine — logged once so it shows up
+    // without spamming every frame.
+    static bool fbo_checked = false;
+    if (!fbo_checked) {
+        fbo_checked = true;
+        GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        fprintf(stderr, "[startshipper] gl: fbo=%u %dx%d status=0x%x%s\n", fbo, width, height, status,
+                status == GL_FRAMEBUFFER_COMPLETE ? " (complete)" : " (INCOMPLETE)");
+    }
+
     glViewport(0, 0, width, height);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
