@@ -1,5 +1,7 @@
 #include "loadgl.h"
 
+#include <dlfcn.h>
+#include <stdbool.h>
 #include <stddef.h>
 
 // glad/gl.h only *declares* these (GLAD_API_CALL expands to `extern` [+
@@ -51,7 +53,26 @@ PFNGLUSEPROGRAMPROC glad_glUseProgram = NULL;
 PFNGLVERTEXATTRIBPOINTERPROC glad_glVertexAttribPointer = NULL;
 PFNGLVIEWPORTPROC glad_glViewport = NULL;
 
-#define GLFN_LOAD(NAME, TYPE) (glad_##NAME = (TYPE) load(#NAME))
+static void *gl_fallback_lib(void) {
+    static void *handle = NULL;
+    static bool tried = false;
+    if (!tried) {
+        tried = true;
+        handle = dlopen("libGLESv2.so.2", RTLD_LAZY | RTLD_LOCAL);
+        if (!handle) handle = dlopen("libGLESv2.so", RTLD_LAZY | RTLD_LOCAL);
+        if (!handle) handle = dlopen("libGL.so.1", RTLD_LAZY | RTLD_LOCAL);
+    }
+    return handle;
+}
+
+static void *gl_load_symbol(GLADloadfunc load, const char *name) {
+    void *p = (void *) load(name);
+    if (p) return p;
+    void *handle = gl_fallback_lib();
+    return handle ? dlsym(handle, name) : NULL;
+}
+
+#define GLFN_LOAD(NAME, TYPE) (glad_##NAME = (TYPE) gl_load_symbol(load, #NAME))
 
 void gl_load_functions(GLADloadfunc load) {
     GLFN_LOAD(glActiveTexture, PFNGLACTIVETEXTUREPROC);
