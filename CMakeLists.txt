@@ -9,42 +9,21 @@ project(startshipper_libretro C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+option(DEBUG "not strip / remove symbols" OFF)
 
 include(FetchContent)
 
-# ---------------------------------------------------------------------------
-# libretro.h — API header only, no core assumes a frontend already exists.
-# ---------------------------------------------------------------------------
 set(LIBRETRO_DIR "${CMAKE_SOURCE_DIR}/vendor/mono/retroarch")
 set(LIBRETRO_DOWNLOAD "https://raw.githubusercontent.com/libretro/RetroArch/ee3eae34c425a1645b923395854dda7f2543df3/libretro-common/include/libretro.h")
 if (NOT EXISTS "${LIBRETRO_DIR}/libretro.h")
     file(DOWNLOAD "${LIBRETRO_DOWNLOAD}" "${LIBRETRO_DIR}/libretro.h" SHOW_PROGRESS)
 endif()
 
-# ---------------------------------------------------------------------------
-# glad — GL2/GLES2 loader used by source/backend/gl.c
-# ---------------------------------------------------------------------------
 set(GLAD_DOWNLOAD "https://github.com/gly-engine/archive/archive/refs/heads/glad.tar.gz")
 set(GLAD_DIR "${CMAKE_SOURCE_DIR}/vendor/opengl/glad")
 if (NOT EXISTS "${GLAD_DIR}/include")
     FetchContent_Populate(glad URL ${GLAD_DOWNLOAD} SOURCE_DIR ${GLAD_DIR})
 endif()
-
-# Only glad's headers are used (typedefs, enums, the glad_gl* pointer table +
-# `#define glFoo glad_glFoo` macros) — glad's own generated src/gl.c is NOT
-# compiled: it eagerly resolves every GL 1.0-2.1 + GLES2 entry point (~24KB of
-# .text) whether gl.c/text.c call it or not. source/backend/loadgl.c replaces
-# it with a ~40-entry-point loader covering exactly what this game calls,
-# shared as-is between the desktop GL2.1 and GLES2 context (same subset).
-
-# ---------------------------------------------------------------------------
-# Tamzen font — HUD/menu text (source/backend/text.c) draws precomputed
-# glyph bitmaps, no font-format parsing at runtime at all. tools/fonts.c
-# (built below, same host-native pattern as xxd_tool) reads the BDF sources
-# for Tamzen5x9 regular+bold at *build* time and bakes each glyph's pixels +
-# metrics straight into a C header (see include/bitfont.h) — the shipped
-# core never touches BDF/OTB/PCF parsing, just copies bytes into a texture.
-# ---------------------------------------------------------------------------
 set(FONTS_INCLUDE_DIR "${CMAKE_BINARY_DIR}/include/gecnd")
 
 set(TAMZEN_DIR "${CMAKE_SOURCE_DIR}/vendor/mono/tamzen-font")
@@ -53,20 +32,7 @@ if (NOT EXISTS "${TAMZEN_DIR}")
     FetchContent_Populate(tamzen_font URL "${TAMZEN_DOWNLOAD}" SOURCE_DIR ${TAMZEN_DIR})
 endif()
 
-# xxd_tool: generic "xxd -i"-alike — embeds any file as a C byte array.
-# Used below for the font and the GLSL sources, so the built .so has nothing
-# to locate at runtime (no font file, no shader files).
-#
-# When cross-compiling (TARGET set -> zig-toolchain.cmake), CMAKE_C_COMPILER
-# is the *target* compiler (e.g. armv7) — a binary built with it can't run on
-# this machine during the build. zig-toolchain.cmake also drops a host-native
-# "zig-cc-host" wrapper next to it (no -target flag, compiles for whatever's
-# running cmake); use that to build xxd_tool directly, bypassing
-# add_executable, which would always go through CMAKE_C_COMPILER.
 if (DEFINED TARGET)
-    # "xxd", not "xxd_tool" — same name as the custom target below trips up
-    # make's dependency graph (harmless "circular dependency abandoned"
-    # warning, but avoidable).
     set(XXD_TOOL_BIN "${CMAKE_BINARY_DIR}/xxd")
     add_custom_command(
         OUTPUT "${XXD_TOOL_BIN}"
@@ -95,9 +61,6 @@ function(embed_file INPUT SYMBOL FILENAME OUTVAR)
     set(${OUTVAR} "${_header}" PARENT_SCOPE)
 endfunction()
 
-# fonts_tool: BDF -> C header baker (tools/fonts.c). Same host-native /
-# cross-compile split as xxd_tool above, for the same reason (it must run
-# during the build, on the machine doing the building).
 if (DEFINED TARGET)
     set(FONTS_TOOL_BIN "${CMAKE_BINARY_DIR}/fonts")
     add_custom_command(
@@ -182,21 +145,25 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 set_target_properties(${PROJECT_NAME} PROPERTIES
     PREFIX ""
     OUTPUT_NAME "startshipper_libretro"
-    C_VISIBILITY_PRESET hidden
-    INTERPROCEDURAL_OPTIMIZATION TRUE
 )
 
-target_compile_options(${PROJECT_NAME} PRIVATE
-    -Os
-    -ffunction-sections
-    -fdata-sections
-    -fno-asynchronous-unwind-tables
-)
-target_link_options(${PROJECT_NAME} PRIVATE
-    -Wl,--gc-sections
-    -Wl,--build-id=none
-    -s
-)
+if(NOT DEBUG)
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        C_VISIBILITY_PRESET hidden
+        INTERPROCEDURAL_OPTIMIZATION TRUE
+    )
+    target_compile_options(${PROJECT_NAME} PRIVATE
+        -Os
+        -ffunction-sections
+        -fdata-sections
+        -fno-asynchronous-unwind-tables
+    )
+    target_link_options(${PROJECT_NAME} PRIVATE
+        -Wl,--gc-sections
+        -Wl,--build-id=none
+        -s
+    )
+endif()
 
 if (UNIX)
     target_link_libraries(${PROJECT_NAME} PRIVATE m ${CMAKE_DL_LIBS})
