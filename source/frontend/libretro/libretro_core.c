@@ -9,13 +9,20 @@
 #include "gl.h"
 #include "text.h"
 #include "game.h"
+#include "audio.h"
 
 #include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
 #define SCREEN_W 640u
 #define SCREEN_H 480u
+
+// 44100 / 60 == 735 exactly, so a fixed-size buffer needs no fractional
+// carry-over between retro_run() calls.
+#define AUDIO_SAMPLE_RATE 44100u
+#define AUDIO_FRAMES_PER_RUN (AUDIO_SAMPLE_RATE / 60u)
 
 static retro_environment_t environ_cb;
 static retro_video_refresh_t video_cb;
@@ -152,11 +159,18 @@ RETRO_API void retro_run(void) {
     game_render(fbo, (int)SCREEN_W, (int)SCREEN_H);
 
     if (video_cb) video_cb(RETRO_HW_FRAME_BUFFER_VALID, SCREEN_W, SCREEN_H, 0);
+
+    if (audio_batch_cb) {
+        static int16_t audio_buf[AUDIO_FRAMES_PER_RUN * 2];
+        audio_generate(audio_buf, AUDIO_FRAMES_PER_RUN);
+        audio_batch_cb(audio_buf, AUDIO_FRAMES_PER_RUN);
+    }
 }
 
 RETRO_API bool retro_load_game(const struct retro_game_info *info) {
     (void)info; // content is intentionally ignored — /dev/null works fine.
     negotiate_hw_render();
+    audio_init(AUDIO_SAMPLE_RATE);
     game_init();
     return true;
 }

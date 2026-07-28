@@ -5,6 +5,7 @@
 #include "game.h"
 #include "gl.h"
 #include "text.h"
+#include "audio.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -927,6 +928,7 @@ static void hangar_buy_ship(int id) {
     if (g.profile.credits < SHIPS[id].price) return;
     g.profile.credits -= SHIPS[id].price;
     g.profile.owned_ships[id] = true;
+    play_sound(SOUND_PICKUP);
     hangar_equip_ship(id);
 }
 
@@ -936,6 +938,7 @@ static void hangar_buy_part(int slot, int id) {
     g.profile.credits -= PARTS[slot][id].price;
     g.profile.owned_parts[slot][id] = true;
     g.profile.loadout.parts[slot] = id;
+    play_sound(SOUND_PICKUP);
     rebuild_ship_mesh();
 }
 
@@ -945,6 +948,7 @@ static void hangar_buy_color(int id) {
     g.profile.credits -= COLORS[id].price;
     g.profile.owned_colors[id] = true;
     g.profile.loadout.color = id;
+    play_sound(SOUND_PICKUP);
     rebuild_ship_mesh();
 }
 
@@ -955,6 +959,7 @@ static void hangar_buy_upgrade(int key) {
     if (g.profile.credits < cost) return;
     g.profile.credits -= cost;
     g.profile.upgrade_level[key]++;
+    play_sound(SOUND_PICKUP);
 }
 
 static int hangar_list_count(void) {
@@ -968,6 +973,7 @@ static int hangar_list_count(void) {
 }
 
 static void hangar_confirm(void) {
+    play_sound(SOUND_UI_BLIP);
     switch (g.hangTab) {
         case HANGAR_TAB_SHIPS: hangar_buy_ship(g.hangSel); break;
         case HANGAR_TAB_PARTS: hangar_buy_part(g.partSlot, g.hangSel); break;
@@ -1137,6 +1143,7 @@ static void fire_bullet(void) {
         }
     }
     g.fireSide = -g.fireSide;
+    play_sound(SOUND_LASER);
 }
 
 static void spawn_enemy(void) {
@@ -1193,6 +1200,10 @@ static void update_play(const GameInput *input) {
     else if (braking) target_speed *= 0.45f;
     g.speed = lerpf(g.speed, target_speed, 0.08f);
 
+    static bool was_boosting = false;
+    if (g.boosting && !was_boosting) play_sound(SOUND_JUMP);
+    was_boosting = g.boosting;
+
     g.velX = lerpf(g.velX, -ix * SHIP_ACCEL, 0.35f);
     g.velY = lerpf(g.velY, -iy * SHIP_ACCEL * 0.85f, 0.35f);
     g.shipX = clampf(g.shipX + g.velX, -BOUNDS_X, BOUNDS_X);
@@ -1211,6 +1222,7 @@ static void update_play(const GameInput *input) {
 
     float boost_power = clampf((g.speed - BASE_SPEED) / (BASE_SPEED * 1.2f), 0.0f, 1.0f);
     if (g.boosting) spawn_boost_particles(g.shipX, g.shipY, -1.35f, boost_power);
+    thrust_set(g.boosting, boost_power);
 
     g.spawnTimer--;
     if (g.spawnTimer <= 0) {
@@ -1245,6 +1257,8 @@ static void update_play(const GameInput *input) {
             g.invuln = 90;
             g.shake = 1.0f;
             spawn_fx(g.shipX, g.shipY, 0.5f, true);
+            play_sound(SOUND_IMPACT);
+            play_sound(SOUND_EXPLOSION_BIG);
             if (g.lives <= 0) {
                 award_run_credits();
                 g.state = STATE_OVER;
@@ -1273,11 +1287,13 @@ static void update_play(const GameInput *input) {
             if (e->type == 1) {
                 int removed = carve_world(e, bx, by, bz, e->x, e->y, e->z, e->sc, e->rx, e->ry, e->rz, dmg);
                 spawn_fx(bx, by, bz, false);
+                play_sound(SOUND_IMPACT);
                 g.score += removed * 8;
                 e->radius = voxel_collision_radius(&e->voxel) * e->sc;
                 if (e->voxel.count <= VOXEL_DESTROY_AT) {
                     e->active = false;
                     spawn_fx(e->x, e->y, e->z, true);
+                    play_sound(SOUND_EXPLOSION_BIG);
                     g.score += 60;
                 }
             } else {
@@ -1285,9 +1301,11 @@ static void update_play(const GameInput *input) {
                 if (e->hp <= 0) {
                     e->active = false;
                     spawn_fx(e->x, e->y, e->z, false);
+                    play_sound(SOUND_EXPLOSION_SMALL);
                     g.score += 100;
                 } else {
                     spawn_fx(bx, by, bz, false);
+                    play_sound(SOUND_IMPACT);
                 }
             }
             break;
@@ -1333,8 +1351,8 @@ static void update_hangar(const GameInput *input) {
 
     if (g.hangFocusTabs) {
         if (g.hangNavLock == 0) {
-            if (left_edge) { g.hangTab = (g.hangTab + HANGAR_TAB_COUNT - 1) % HANGAR_TAB_COUNT; g.hangNavLock = 10; }
-            if (right_edge) { g.hangTab = (g.hangTab + 1) % HANGAR_TAB_COUNT; g.hangNavLock = 10; }
+            if (left_edge) { g.hangTab = (g.hangTab + HANGAR_TAB_COUNT - 1) % HANGAR_TAB_COUNT; g.hangNavLock = 10; play_sound(SOUND_UI_BLIP); }
+            if (right_edge) { g.hangTab = (g.hangTab + 1) % HANGAR_TAB_COUNT; g.hangNavLock = 10; play_sound(SOUND_UI_BLIP); }
         }
         if (confirm_edge || down_edge) {
             if (g.hangTab == HANGAR_TAB_LAUNCH) {
@@ -1359,10 +1377,12 @@ static void update_hangar(const GameInput *input) {
             if (count > 0 && g.hangSel > 0) g.hangSel--;
             else g.hangFocusTabs = true;
             g.hangNavLock = 10;
+            play_sound(SOUND_UI_BLIP);
         }
         if (down_edge && count > 0) {
             g.hangSel = (g.hangSel + 1) % count;
             g.hangNavLock = 10;
+            play_sound(SOUND_UI_BLIP);
         }
     }
 
@@ -1374,6 +1394,16 @@ void game_update(const GameInput *input) {
     bool start_edge = edge(input->start_held, g.prev_input.start_held);
 
     if (g.shake > 0.0f) { g.shake -= 0.06f; if (g.shake < 0.0f) g.shake = 0.0f; }
+
+    // music_set_track() no-ops when the track hasn't changed, so it's cheap
+    // to just re-assert the track for the current state every frame instead
+    // of hunting down every place g.state gets written.
+    switch (g.state) {
+        case STATE_MENU:   music_set_track(MUSIC_MENU); break;
+        case STATE_HANGAR: music_set_track(MUSIC_MENU); break;
+        case STATE_OVER:   music_set_track(MUSIC_GAMEOVER); break;
+        default:            music_set_track(MUSIC_PLAY); break;
+    }
 
     switch (g.state) {
         case STATE_MENU:

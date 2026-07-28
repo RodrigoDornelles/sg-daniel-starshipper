@@ -113,6 +113,30 @@ add_library(${PROJECT_NAME} SHARED
     source/backend/text.c
     source/game/main.c
     ${GLAD_SOURCES}
+
+    # Procedural audio engine (source/sound/) - no WAV/OGG assets, everything
+    # below is generated PCM: oscillators -> synth voices -> music/SFX -> mixer.
+    source/sound/audio_rng.c
+    source/sound/osc.c
+    source/sound/envelope.c
+    source/sound/filter.c
+    source/sound/synth.c
+    source/sound/mixer.c
+    source/sound/sfx.c
+    source/sound/audio_device.c
+    source/sound/music/scales.c
+    source/sound/music/bass.c
+    source/sound/music/lead.c
+    source/sound/music/pad.c
+    source/sound/music/drums.c
+    source/sound/music/sequencer.c
+    source/sound/sfx/laser.c
+    source/sound/sfx/explosion.c
+    source/sound/sfx/jump.c
+    source/sound/sfx/pickup.c
+    source/sound/sfx/impact.c
+    source/sound/sfx/ui.c
+    source/sound/sfx/thrust.c
 )
 add_dependencies(${PROJECT_NAME} generate_headers)
 
