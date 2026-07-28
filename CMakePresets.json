@@ -1,0 +1,18 @@
+{
+  "version": 8,
+  "configurePresets": [
+    {
+      "name": "libretro_armv7_neon_hf",
+      "binaryDir": "${sourceDir}/build_libretro_armv7_neon_hf",
+      "cacheVariables": {
+        "TARGET": "arm-linux-gnueabihf.2.4-cortex_a7"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "libretro_armv7_neon_hf",
+      "configurePreset": "libretro_armv7_neon_hf"
+    }
+  ]
+}

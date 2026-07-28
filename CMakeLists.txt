@@ -1,4 +1,9 @@
 cmake_minimum_required(VERSION 3.15)
+
+if(DEFINED TARGET)
+    set(CMAKE_TOOLCHAIN_FILE "${CMAKE_SOURCE_DIR}/zig-toolchain.cmake" CACHE STRING "zig cross compiler")
+endif()
+
 project(startshipper_libretro C)
 
 set(CMAKE_C_STANDARD 11)
@@ -53,14 +58,38 @@ endif()
 # xxd_tool: generic "xxd -i"-alike — embeds any file as a C byte array.
 # Used below for the font and the GLSL sources, so the built .so has nothing
 # to locate at runtime (no font file, no shader files).
-add_executable(xxd_tool tools/xxd.c)
+#
+# When cross-compiling (TARGET set -> zig-toolchain.cmake), CMAKE_C_COMPILER
+# is the *target* compiler (e.g. armv7) — a binary built with it can't run on
+# this machine during the build. zig-toolchain.cmake also drops a host-native
+# "zig-cc-host" wrapper next to it (no -target flag, compiles for whatever's
+# running cmake); use that to build xxd_tool directly, bypassing
+# add_executable, which would always go through CMAKE_C_COMPILER.
+if (DEFINED TARGET)
+    # "xxd", not "xxd_tool" — same name as the custom target below trips up
+    # make's dependency graph (harmless "circular dependency abandoned"
+    # warning, but avoidable).
+    set(XXD_TOOL_BIN "${CMAKE_BINARY_DIR}/xxd")
+    add_custom_command(
+        OUTPUT "${XXD_TOOL_BIN}"
+        COMMAND "${CMAKE_BINARY_DIR}/zig-cc-host" -O2 -o "${XXD_TOOL_BIN}" "${CMAKE_SOURCE_DIR}/tools/xxd.c"
+        DEPENDS "${CMAKE_SOURCE_DIR}/tools/xxd.c"
+        COMMENT "Building xxd_tool for the host (zig-cc-host)"
+        VERBATIM
+    )
+    add_custom_target(xxd_tool ALL DEPENDS "${XXD_TOOL_BIN}")
+    set(XXD_TOOL_CMD "${XXD_TOOL_BIN}")
+else()
+    add_executable(xxd_tool tools/xxd.c)
+    set(XXD_TOOL_CMD "$<TARGET_FILE:xxd_tool>")
+endif()
 
 function(embed_file INPUT SYMBOL FILENAME OUTVAR)
     set(_header "${FONTS_INCLUDE_DIR}/${FILENAME}")
     add_custom_command(
         OUTPUT "${_header}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${FONTS_INCLUDE_DIR}"
-        COMMAND $<TARGET_FILE:xxd_tool> "${INPUT}" "${_header}" "${SYMBOL}"
+        COMMAND ${XXD_TOOL_CMD} "${INPUT}" "${_header}" "${SYMBOL}"
         DEPENDS xxd_tool "${INPUT}"
         COMMENT "Embedding ${FILENAME}"
         VERBATIM
