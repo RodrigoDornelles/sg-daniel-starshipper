@@ -1,5 +1,6 @@
 #include "gl.h"
 #include "glad/gl.h"
+#include "loadgl.h"
 
 #include <stddef.h>
 #include <stdio.h>
@@ -38,20 +39,12 @@ static unsigned int compile_shader(unsigned int type, const char *src, int len, 
 }
 
 bool gl_backend_init(gl_proc_address_fn get_proc_address, bool is_gles) {
-    int loaded = is_gles ? gladLoadGLES2((GLADloadfunc)get_proc_address)
-                         : gladLoadGL((GLADloadfunc)get_proc_address);
-    if (!loaded) {
-        // gladLoadGL{,ES2} returns 0 if ITS OWN extension probe fails
-        // (GL_EXT_discard_framebuffer / GL_OES_compressed_ETC1_RGB8_texture —
-        // neither of which gl.c uses), even though every core function
-        // pointer we actually need is loaded before that probe runs. Seen on
-        // real GLES2 hardware where that probe path doesn't apply; desktop
-        // Mesa's probe succeeds, which is why this never showed up there.
-        // Warn and keep going — if a function we truly need is missing, the
-        // shader compile/link below will fail, and THAT'S the real signal.
-        fprintf(stderr, "[startshipper] gl: %s reported failure (likely just its own extension probe, not the functions we need) — continuing\n",
-                is_gles ? "gladLoadGLES2" : "gladLoadGL");
-    }
+    // Same ~40 entry points either way (desktop GL2.1 and GLES2 share this
+    // subset) — no version/extension probing, unlike glad's own loader. If
+    // something we actually need turns out missing, the shader compile/link
+    // below will fail, and THAT'S the real signal.
+    (void)is_gles;
+    gl_load_functions((GLADloadfunc)get_proc_address);
 
     unsigned int vs = compile_shader(GL_VERTEX_SHADER, (const char *)SHADER_BASIC_VERT_SRC, (int)SHADER_BASIC_VERT_SRC_len, "basic.vert");
     unsigned int fs = compile_shader(GL_FRAGMENT_SHADER, (const char *)SHADER_BASIC_FRAG_SRC, (int)SHADER_BASIC_FRAG_SRC_len, "basic.frag");

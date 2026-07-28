@@ -30,11 +30,12 @@ if (NOT EXISTS "${GLAD_DIR}/include")
     FetchContent_Populate(glad URL ${GLAD_DOWNLOAD} SOURCE_DIR ${GLAD_DIR})
 endif()
 
-# gl.c was generated with --merge --api='gl:core=2.1,gles2=2.0': a single
-# glad_gl* pointer table shared by both a desktop GL2.1 and a GLES2 context.
-# gles2.c/glx.c/wgl.c/egl.c are the legacy standalone loaders — unused here,
-# the libretro frontend already owns context creation.
-set(GLAD_SOURCES "${GLAD_DIR}/src/gl.c")
+# Only glad's headers are used (typedefs, enums, the glad_gl* pointer table +
+# `#define glFoo glad_glFoo` macros) — glad's own generated src/gl.c is NOT
+# compiled: it eagerly resolves every GL 1.0-2.1 + GLES2 entry point (~24KB of
+# .text) whether gl.c/text.c call it or not. source/backend/loadgl.c replaces
+# it with a ~40-entry-point loader covering exactly what this game calls,
+# shared as-is between the desktop GL2.1 and GLES2 context (same subset).
 
 # ---------------------------------------------------------------------------
 # Tamzen font — HUD/menu text (source/backend/text.c) draws precomputed
@@ -140,10 +141,10 @@ add_custom_target(generate_headers DEPENDS
 add_library(${PROJECT_NAME} SHARED
     source/frontend/libretro/libretro_core.c
     source/backend/gl.c
+    source/backend/loadgl.c
     source/backend/math4.c
     source/backend/text.c
     source/game/main.c
-    ${GLAD_SOURCES}
 
     # Procedural audio engine (source/sound/) - no WAV/OGG assets, everything
     # below is generated PCM: oscillators -> synth voices -> music/SFX -> mixer.
