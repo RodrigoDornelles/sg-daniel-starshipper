@@ -1656,7 +1656,7 @@ static void draw_hud(int width, int height) {
     text_draw(16.0f, 38.0f, 16.0f, C_CYAN[0], C_CYAN[1], C_CYAN[2], C_CYAN[3], buf, width, height);
 
     if (g.state == STATE_MENU) {
-        const char *title = "STAR FOX";
+        const char *title = "Sg. Daniel Spaceshipper";
         float title_w = text_width(title, 32.0f);
         text_draw((float)width * 0.5f - title_w * 0.5f, 150.0f, 32.0f, C_WHITE[0], C_WHITE[1], C_WHITE[2], C_WHITE[3], title, width, height);
         const char *hint = "PRESS A TO START";
