@@ -129,24 +129,28 @@ void gl_set_camera(Mat4 view, Mat4 proj) {
 GlMesh gl_mesh_create(const GlVertex *vertices, int count) {
     GlMesh mesh;
     memset(&mesh, 0, sizeof(mesh));
-    glGenBuffers(1, &mesh.vbo);
-    glBindBuffer(GL_ARRAY_BUFFER, mesh.vbo);
-    glBufferData(GL_ARRAY_BUFFER, (long)(count * (int)sizeof(GlVertex)), vertices, GL_STATIC_DRAW);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    if (count > 0) {
+        glGenBuffers(1, &mesh.vbo);
+        glBindBuffer(GL_ARRAY_BUFFER, mesh.vbo);
+        glBufferData(GL_ARRAY_BUFFER, (long)(count * (int)sizeof(GlVertex)), vertices, GL_STATIC_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        mesh.capacity = count;
+    }
     mesh.vertex_count = count;
-    mesh.capacity = count;
     return mesh;
 }
 
 void gl_mesh_update(GlMesh *mesh, const GlVertex *vertices, int count) {
-    glBindBuffer(GL_ARRAY_BUFFER, mesh->vbo);
-    if (count > mesh->capacity) {
+    if (count > 0) {
+        glBindBuffer(GL_ARRAY_BUFFER, mesh->vbo);
+        // Always respecify (orphan) rather than glBufferSubData into the
+        // existing store — same workaround as pipeline/core.c's flush_batch:
+        // subdata-ing a buffer the GPU may still be reading from a couple
+        // frames back crashes some Mali driver builds.
         glBufferData(GL_ARRAY_BUFFER, (long)(count * (int)sizeof(GlVertex)), vertices, GL_DYNAMIC_DRAW);
         mesh->capacity = count;
-    } else {
-        glBufferSubData(GL_ARRAY_BUFFER, 0, (long)(count * (int)sizeof(GlVertex)), vertices);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
     }
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
     mesh->vertex_count = count;
 }
 

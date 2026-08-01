@@ -15,6 +15,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #define DEFAULT_SCREEN_W 640u
 #define DEFAULT_SCREEN_H 480u
@@ -23,6 +24,19 @@
 // carry-over between retro_run() calls.
 #define AUDIO_SAMPLE_RATE 44100u
 #define AUDIO_FRAMES_PER_RUN (AUDIO_SAMPLE_RATE / 60u)
+
+#define FIXED_DT (1.0 / 60.0)
+#define MAX_CATCHUP_TICKS 8
+
+static bool s_clock_started = false;
+static double s_last_time = 0.0;
+static double s_accumulator = 0.0;
+
+static double monotonic_now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+}
 
 static retro_environment_t environ_cb;
 static retro_video_refresh_t video_cb;
@@ -197,16 +211,34 @@ RETRO_API void retro_run(void) {
 
     unsigned int fbo = hw_render.get_current_framebuffer ? (unsigned int)hw_render.get_current_framebuffer() : 0u;
 
-    game_update(&in);
-    game_render(fbo, (int)screen_w, (int)screen_h, (int)deadscreen_w, (int)deadscreen_h);
-
-    if (video_cb) video_cb(RETRO_HW_FRAME_BUFFER_VALID, screen_w, screen_h, 0);
-
-    if (audio_enabled && audio_batch_cb) {
-        static int16_t audio_buf[AUDIO_FRAMES_PER_RUN * 2];
-        audio_generate(audio_buf, AUDIO_FRAMES_PER_RUN);
-        audio_batch_cb(audio_buf, AUDIO_FRAMES_PER_RUN);
+    double now = monotonic_now();
+    double dt;
+    if (!s_clock_started) {
+        s_clock_started = true;
+        dt = FIXED_DT;
+    } else {
+        dt = now - s_last_time;
+        if (dt < 0.0) dt = 0.0;
+        if (dt > FIXED_DT * MAX_CATCHUP_TICKS) dt = FIXED_DT * MAX_CATCHUP_TICKS;
     }
+    s_last_time = now;
+    s_accumulator += dt;
+
+    int ticks = 0;
+    while (s_accumulator >= FIXED_DT && ticks < MAX_CATCHUP_TICKS) {
+        game_update(&in);
+        s_accumulator -= FIXED_DT;
+        ticks++;
+
+        if (audio_enabled && audio_batch_cb) {
+            static int16_t audio_buf[AUDIO_FRAMES_PER_RUN * 2];
+            audio_generate(audio_buf, AUDIO_FRAMES_PER_RUN);
+            audio_batch_cb(audio_buf, AUDIO_FRAMES_PER_RUN);
+        }
+    }
+
+    game_render(fbo, (int)screen_w, (int)screen_h, (int)deadscreen_w, (int)deadscreen_h);
+    if (video_cb) video_cb(RETRO_HW_FRAME_BUFFER_VALID, screen_w, screen_h, 0);
 }
 
 RETRO_API bool retro_load_game(const struct retro_game_info *info) {
