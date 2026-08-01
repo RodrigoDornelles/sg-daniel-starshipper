@@ -22,6 +22,17 @@ void pad_init(void) {
     }
 }
 
+void pad_set_gameover(int on) {
+    for (int i = 0; i < PAD_VOICES; i++) {
+        voices[i].osc1.shape = on ? WAVE_SAW : WAVE_SINE;
+        voices[i].osc2.shape = on ? WAVE_SAW : WAVE_SINE;
+        voices[i].env.attack = on ? 0.25f : 1.2f;
+        voices[i].env.release = on ? 0.5f : 1.5f;
+        voices[i].distortion = on ? 0.35f : 0.0f;
+        voices[i].filter_cutoff_hz = on ? 900.0f : 1800.0f; // saw needs taming or it's harsh, not just dry
+    }
+}
+
 void pad_play_chord(const Chord *chord) {
     for (int i = 0; i < PAD_VOICES; i++) {
         float freq = chord_tone_freq(chord, i, 2);

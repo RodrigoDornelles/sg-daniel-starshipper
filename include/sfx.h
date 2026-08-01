@@ -7,6 +7,7 @@ typedef enum {
     SOUND_LASER,
     SOUND_EXPLOSION_SMALL,
     SOUND_EXPLOSION_BIG,
+    SOUND_EXPLOSION_GRAVE, // ship-death final blow — deeper/longer than BIG
     SOUND_JUMP,
     SOUND_PICKUP,
     SOUND_IMPACT,

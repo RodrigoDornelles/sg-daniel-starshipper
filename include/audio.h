@@ -9,6 +9,7 @@
 #include "music.h"      // MusicTrack, music_set_track()
 #include "sfx.h"        // SoundId, play_sound()
 #include "sfx_thrust.h" // thrust_set() - continuous engine rumble
+#include "sfx_fire.h"   // fire_set() - continuous hull-fire crackle
 
 void audio_init(unsigned sample_rate);
 void audio_reset(void);

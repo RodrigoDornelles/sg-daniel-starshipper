@@ -132,6 +132,7 @@ add_library(${PROJECT_NAME} SHARED
     source/sound/sfx/impact.c
     source/sound/sfx/ui.c
     source/sound/sfx/thrust.c
+    source/sound/sfx/fire.c
 )
 add_dependencies(${PROJECT_NAME} generate_headers)
 

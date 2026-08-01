@@ -6,6 +6,7 @@
 #include "sfx_impact.h"
 #include "sfx_ui.h"
 #include "sfx_thrust.h"
+#include "sfx_fire.h"
 
 void sfx_init(void) {
     laser_init();
@@ -15,6 +16,7 @@ void sfx_init(void) {
     impact_init();
     ui_init();
     thrust_init();
+    fire_init();
 }
 
 void play_sound(SoundId id) {
@@ -22,6 +24,7 @@ void play_sound(SoundId id) {
         case SOUND_LASER:          laser_trigger(); break;
         case SOUND_EXPLOSION_SMALL: explosion_trigger(0); break;
         case SOUND_EXPLOSION_BIG:   explosion_trigger(1); break;
+        case SOUND_EXPLOSION_GRAVE: explosion_trigger(2); break;
         case SOUND_JUMP:            jump_trigger(); break;
         case SOUND_PICKUP:          pickup_trigger(); break;
         case SOUND_IMPACT:          impact_trigger(); break;
@@ -36,5 +39,6 @@ float sfx_tick(float sample_rate) {
          + pickup_tick(sample_rate)
          + impact_tick(sample_rate)
          + ui_tick(sample_rate)
-         + thrust_tick(sample_rate);
+         + thrust_tick(sample_rate)
+         + fire_tick(sample_rate);
 }

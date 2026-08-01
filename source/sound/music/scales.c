@@ -16,8 +16,14 @@ const Riff RIFF_A = {{{0, 1}, {8, 0}, {3, 0}, {10, 0}}};
 const Riff RIFF_B = {{{0, 1}, {10, 0}, {8, 0}, {7, 0}}};
 const Riff RIFF_C = {{{0, 1}, {3, 0}, {10, 0}, {5, 0}}};
 
+static int s_transpose_semitones = 0;
+
+void scales_set_transpose(int semitones) {
+    s_transpose_semitones = semitones;
+}
+
 float note_freq(int offset, int octave) {
-    return E2_HZ * powf(2.0f, (float)offset / 12.0f + (float)octave);
+    return E2_HZ * powf(2.0f, ((float)offset + (float)s_transpose_semitones) / 12.0f + (float)octave);
 }
 
 float chord_tone_freq(const Chord *chord, int degree, int octave) {

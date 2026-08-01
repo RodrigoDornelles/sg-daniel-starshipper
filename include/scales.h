@@ -30,6 +30,11 @@ extern const Riff RIFF_A; // Em C G D
 extern const Riff RIFF_B; // Em D C B
 extern const Riff RIFF_C; // Em G D A
 
+// Shifts every note_freq/chord_tone_freq call by this many semitones until
+// changed again (0 = none) — e.g. the game-over track drops a whole step
+// for a heavier, more melancholic key without a second set of tables.
+void scales_set_transpose(int semitones);
+
 // E2 (low bass E) as the reference pitch; `offset` is semitones from E,
 // `octave` 0 = the E2..D#3 octave, 1 = one octave up, etc (may be negative).
 float note_freq(int offset, int octave);

@@ -36,10 +36,33 @@
 #define VOXEL_CELL 0.30f
 #define VOXEL_DESTROY_AT 0
 
+// g.damageLeft/damageRight (magnitude) only ever grow — feeds the handling
+// pull/turbulence/fire below. g.hitsLeft/hitsRight (plain hit count) is the
+// separate, simpler thing box_is_chewed_off keys off: each box has a
+// breakRank 1..MAX_BREAK_RANK, and it's gone once that side's hit count
+// reaches its rank — one hit, one piece, never regrows. Hit count reaching
+// MAX_BREAK_RANK means every breakable box on that side (the whole wing) is
+// gone — that's the spin-out/explode trigger (see STATE_DYING).
+#define MAX_BREAK_RANK 3
+// A gun's own wing mount stops firing entirely once that side has taken
+// this many hits (still short of losing the whole side) — see fire_bullet.
+#define GUN_DISABLE_HITS 2
+// Impact close enough to dead-center counts as frontal: hits both sides a
+// little instead of picking one.
+#define FRONTAL_DX 0.5f
+// An impactor at least this big already costs 2 pieces in one hit, not 1.
+#define BIG_ENEMY_RADIUS 1.0f
+#define DAMAGE_SMOKE_THRESHOLD 0 // any hit at all starts the smoke trail
+// Normalizes accumulated one-sided damage into a -1..1 handling pull, and
+// total (both sides) damage into 0..1 "how shaky/on-fire" severity.
+#define DAMAGE_TILT_RANGE 400.0f
+#define DAMAGE_SEVERITY_RANGE 500.0f
+
 #define STATE_MENU 0
 #define STATE_PLAY 1
 #define STATE_OVER 2
 #define STATE_HANGAR 3
+#define STATE_DYING 4 // losing a whole side (see MAX_BREAK_RANK): spin out, then explode into STATE_OVER
 
 #define SLOT_WING 0
 #define SLOT_ENGINE 1
@@ -227,25 +250,28 @@ static void append_voxel_face(GlVertex *buf, int *n, float cx, float cy, float c
 // ---------------------------------------------------------------------
 // Data tables — SHIPS/PARTS/COLORS/UPGRADES, ported 1:1 from source/main.js
 // ---------------------------------------------------------------------
-typedef struct { float cx, cy, cz, sx, sy, sz; bool accent; } BoxDef;
+// breakRank defaults to 0 for any entry that doesn't set it explicitly (C
+// zero-inits missing trailing struct members) — 0 means "never breaks", N
+// means "gone once that side has taken N hits" (see box_is_chewed_off).
+typedef struct { float cx, cy, cz, sx, sy, sz; bool accent; int breakRank; } BoxDef;
 
 static const BoxDef SCOUT_BODY[] = {
     {0.0f, 0.0f, 0.0f, 0.5f, 0.28f, 1.6f, false},
     {0.0f, 0.14f, 0.32f, 0.24f, 0.14f, 0.5f, true},
-    {-0.66f, 0.14f, -0.35f, 0.07f, 0.4f, 0.42f, false},
-    {0.66f, 0.14f, -0.35f, 0.07f, 0.4f, 0.42f, false},
-    {0.0f, 0.28f, -0.72f, 0.07f, 0.5f, 0.4f, false},
+    {-0.66f, 0.14f, -0.35f, 0.07f, 0.4f, 0.42f, false, 2},
+    {0.66f, 0.14f, -0.35f, 0.07f, 0.4f, 0.42f, false, 2},
+    {0.0f, 0.28f, -0.72f, 0.07f, 0.5f, 0.4f, false, -1}, // tail flap — see should_strip_central_flap
 };
 static const BoxDef RAPTOR_BODY[] = {
     {0.0f, 0.0f, 0.0f, 0.42f, 0.22f, 1.5f, false},
     {0.0f, 0.12f, 0.28f, 0.2f, 0.12f, 0.45f, true},
-    {0.0f, 0.22f, -0.65f, 0.06f, 0.45f, 0.35f, false},
+    {0.0f, 0.22f, -0.65f, 0.06f, 0.45f, 0.35f, false, -1}, // tail flap — see should_strip_central_flap
 };
 static const BoxDef TITAN_BODY[] = {
     {0.0f, 0.0f, 0.0f, 0.62f, 0.34f, 1.75f, false},
     {0.0f, 0.16f, 0.35f, 0.28f, 0.16f, 0.55f, true},
-    {-0.72f, 0.12f, -0.2f, 0.08f, 0.35f, 0.5f, false},
-    {0.72f, 0.12f, -0.2f, 0.08f, 0.35f, 0.5f, false},
+    {-0.72f, 0.12f, -0.2f, 0.08f, 0.35f, 0.5f, false, 2},
+    {0.72f, 0.12f, -0.2f, 0.08f, 0.35f, 0.5f, false, 2},
 };
 
 typedef struct {
@@ -262,26 +288,41 @@ static const ShipDef SHIPS[SHIP_COUNT] = {
     {"Titan",  200, 10.0f, 1.0f, 0.0f, 2.0f, 5.0f, 0.82f, TITAN_BODY, 4},
 };
 
+// Each wing is 3 breakable segments per side, outermost to root: tip (blue
+// accent) breaks on that side's 1st hit, mid (gray) on the 2nd, root/"flap"
+// (gray, closest to the fuselage) on the 3rd — one hit, one piece, no
+// magnitude thresholds. 3rd hit (MAX_BREAK_RANK) also means that whole side
+// is gone — the spin-out/explode trigger in the collision handler below.
 static const BoxDef WING_STD_MESH[] = {
-    {-1.0f, 0.0f, -0.1f, 1.4f, 0.06f, 0.6f, false},
-    {1.0f, 0.0f, -0.1f, 1.4f, 0.06f, 0.6f, false},
-    {-1.75f, 0.0f, -0.15f, 0.3f, 0.1f, 0.45f, true},
-    {1.75f, 0.0f, -0.15f, 0.3f, 0.1f, 0.45f, true},
+    {-0.5f, 0.0f, -0.08f, 0.8f, 0.06f, 0.55f, false, 3},
+    {0.5f, 0.0f, -0.08f, 0.8f, 0.06f, 0.55f, false, 3},
+    {-1.15f, 0.0f, -0.12f, 0.5f, 0.06f, 0.5f, false, 2},
+    {1.15f, 0.0f, -0.12f, 0.5f, 0.06f, 0.5f, false, 2},
+    {-1.65f, 0.0f, -0.15f, 0.5f, 0.1f, 0.45f, true, 1},
+    {1.65f, 0.0f, -0.15f, 0.5f, 0.1f, 0.45f, true, 1},
 };
 static const BoxDef WING_WIDE_MESH[] = {
-    {-1.2f, 0.0f, -0.05f, 1.75f, 0.05f, 0.55f, false},
-    {1.2f, 0.0f, -0.05f, 1.75f, 0.05f, 0.55f, false},
+    {-0.65f, 0.0f, -0.03f, 1.0f, 0.05f, 0.5f, false, 3},
+    {0.65f, 0.0f, -0.03f, 1.0f, 0.05f, 0.5f, false, 3},
+    {-1.5f, 0.0f, -0.07f, 0.7f, 0.05f, 0.55f, false, 2},
+    {1.5f, 0.0f, -0.07f, 0.7f, 0.05f, 0.55f, false, 2},
+    {-2.15f, 0.0f, -0.1f, 0.6f, 0.06f, 0.4f, true, 1},
+    {2.15f, 0.0f, -0.1f, 0.6f, 0.06f, 0.4f, true, 1},
 };
 static const BoxDef WING_DART_MESH[] = {
-    {-0.85f, 0.0f, -0.2f, 1.0f, 0.04f, 0.7f, false},
-    {0.85f, 0.0f, -0.2f, 1.0f, 0.04f, 0.7f, false},
+    {-0.4f, 0.0f, -0.15f, 0.6f, 0.04f, 0.6f, false, 3},
+    {0.4f, 0.0f, -0.15f, 0.6f, 0.04f, 0.6f, false, 3},
+    {-0.9f, 0.0f, -0.2f, 0.4f, 0.04f, 0.6f, false, 2},
+    {0.9f, 0.0f, -0.2f, 0.4f, 0.04f, 0.6f, false, 2},
+    {-1.3f, 0.0f, -0.25f, 0.4f, 0.05f, 0.5f, true, 1},
+    {1.3f, 0.0f, -0.25f, 0.4f, 0.05f, 0.5f, true, 1},
 };
 static const BoxDef ENGINE_STD_MESH[]   = {{0.0f, 0.0f, -0.86f, 0.34f, 0.22f, 0.2f, false}};
 static const BoxDef ENGINE_TURBO_MESH[] = {{0.0f, 0.0f, -0.95f, 0.42f, 0.28f, 0.28f, true}};
 static const BoxDef ENGINE_HEAVY_MESH[] = {{0.0f, 0.0f, -0.88f, 0.48f, 0.3f, 0.32f, false}};
 static const BoxDef CANNON_TWIN_MESH[] = {
-    {-0.35f, -0.05f, 0.5f, 0.12f, 0.12f, 0.35f, true},
-    {0.35f, -0.05f, 0.5f, 0.12f, 0.12f, 0.35f, true},
+    {-0.35f, -0.05f, 0.5f, 0.12f, 0.12f, 0.35f, true, 3},
+    {0.35f, -0.05f, 0.5f, 0.12f, 0.12f, 0.35f, true, 3},
 };
 static const BoxDef CANNON_RAIL_MESH[] = {{0.0f, -0.08f, 0.65f, 0.18f, 0.14f, 0.55f, true}};
 static const BoxDef NOSE_STD_MESH[] = {
@@ -304,9 +345,9 @@ typedef struct {
 
 static const PartDef PARTS[PART_SLOT_COUNT][PART_OPTION_COUNT] = {
     [SLOT_WING] = {
-        {"Std Wings",  0,  0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,   WING_STD_MESH, 4},
-        {"Wide Wings", 80, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, -0.05f, WING_WIDE_MESH, 2},
-        {"Dart Wings", 65, -1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.12f, WING_DART_MESH, 2},
+        {"Std Wings",  0,  0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,   WING_STD_MESH, 6},
+        {"Wide Wings", 80, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, -0.05f, WING_WIDE_MESH, 6},
+        {"Dart Wings", 65, -1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.12f, WING_DART_MESH, 6},
     },
     [SLOT_ENGINE] = {
         {"Std Engine", 0,  0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,   ENGINE_STD_MESH, 1},
@@ -417,12 +458,29 @@ static int upgrade_cost(int key, int level) { return UPGRADES[key].base_cost + l
 // ---------------------------------------------------------------------
 // Static mesh builders
 // ---------------------------------------------------------------------
-static GlMesh build_ship_mesh(const Loadout *loadout) {
+// A box on the chewed-off side just doesn't get appended — cheap "missing
+// chunk" look with no extra authored meshes, since wings/hull already split
+// left/right into separate boxes. breakRank == 0 (main fuselage/cockpit/
+// nose) never breaks; breakRank N means that side's Nth hit takes it off —
+// one hit, one piece, no damage-magnitude thresholds. breakRank == -1 is the
+// centered tail flap: it has no side of its own, so it only goes once a
+// wing's down to its last stump AND health's critical (stripCentral) —
+// down to "just a rocket" at the very end.
+static bool box_is_chewed_off(const BoxDef *b, int hitsLeft, int hitsRight, bool stripCentral) {
+    if (b->breakRank == -1) return stripCentral;
+    if (b->breakRank <= 0) return false;
+    if (b->cx > 0.05f) return hitsRight >= b->breakRank;
+    if (b->cx < -0.05f) return hitsLeft >= b->breakRank;
+    return false;
+}
+
+static GlMesh build_ship_mesh(const Loadout *loadout, int hitsLeft, int hitsRight, bool stripCentral) {
     int n = 0;
     const ShipDef *hull = &SHIPS[loadout->ship];
     const ColorDef *col = &COLORS[loadout->color];
     for (int i = 0; i < hull->body_count; i++) {
         const BoxDef *b = &hull->body[i];
+        if (box_is_chewed_off(b, hitsLeft, hitsRight, stripCentral)) continue;
         const float *c = b->accent ? col->accent : col->primary;
         append_box(s_scratch, &n, b->cx, b->cy, b->cz, b->sx, b->sy, b->sz, c[0], c[1], c[2], 1.0f, true);
     }
@@ -430,6 +488,7 @@ static GlMesh build_ship_mesh(const Loadout *loadout) {
         const PartDef *pt = &PARTS[slot][loadout->parts[slot]];
         for (int i = 0; i < pt->mesh_count; i++) {
             const BoxDef *b = &pt->mesh[i];
+            if (box_is_chewed_off(b, hitsLeft, hitsRight, stripCentral)) continue;
             const float *c = b->accent ? col->accent : col->primary;
             append_box(s_scratch, &n, b->cx, b->cy, b->cz, b->sx, b->sy, b->sz, c[0], c[1], c[2], 1.0f, true);
         }
@@ -558,12 +617,28 @@ typedef struct {
 
 typedef struct {
     int state;
-    int score, wave, lives, invuln;
+    int score, wave, invuln;
+    float health, maxHealth;
+    // Monotonic — hits only ever add to whichever side they came from, never
+    // cancel the other side. damageLeft/Right (magnitude, feeds the handling
+    // pull/turbulence and fire severity) vs hitsLeft/Right (a plain count,
+    // feeds box_is_chewed_off — one hit takes off exactly one piece) are
+    // deliberately separate: how hard it's pulling/shaking is proportional,
+    // but which chunk of the hull falls off is not.
+    float damageLeft, damageRight;
+    int hitsLeft, hitsRight;
+    int hitFireTimer; // counts down after each hit — a temporary fire flare on top of the persistent severity-based one
+    bool shipDestroyed; // stops drawing the ship once it's gone — no menu-spin ghost ship on the game-over screen
+    int overFireTimer; // keeps a big fireball going into STATE_OVER instead of cutting straight to a static screen
+    int dyingTimer;
+    float dyingSpin, dyingSpinDir;
+    float dyingCenterX, dyingCenterY; // orbit center for the dogfight-style death spiral
+    float dyingOrbitAngle; // separate from dyingSpin — orbit is slow, the roll (dyingSpin) is a fast violent tumble
     float shake;
     unsigned frame;
     float shipX, shipY, velX, velY, roll, pitch, speed;
     float menuSpin;
-    int fireTimer, fireSide, spawnTimer;
+    int fireTimer, spawnTimer;
     bool boosting;
     int runEarned;
 
@@ -771,6 +846,48 @@ static void spawn_boost_particles(float sx, float sy, float sz, float boost_powe
     }
 }
 
+// Continuous trickle off whichever side(s) are past DAMAGE_SMOKE_THRESHOLD —
+// the missing-box look is subtle in motion, this makes "what's broken"
+// obvious at a glance. Gets more frequent and switches from smoke to actual
+// flame as total damage (both sides) climbs; also drives the fire crackle
+// sound (fire_set), which needs updating every frame regardless.
+static void spawn_damage_smoke(void) {
+    float severity = clampf((g.damageLeft + g.damageRight) / DAMAGE_SEVERITY_RANGE, 0.0f, 1.0f);
+    if (g.hitFireTimer > 0) {
+        float burst = (float)g.hitFireTimer / 180.0f; // 1..0 over ~3s, then back to just the persistent level
+        if (burst > severity) severity = burst;
+        g.hitFireTimer--;
+    }
+    fire_set(severity);
+
+    // No wing left on that side means nothing there to smoke/burn — only a
+    // side that still has some wing material emits.
+    bool rightDamaged = g.damageRight > DAMAGE_SMOKE_THRESHOLD && g.hitsRight < MAX_BREAK_RANK;
+    bool leftDamaged = g.damageLeft > DAMAGE_SMOKE_THRESHOLD && g.hitsLeft < MAX_BREAK_RANK;
+    if (!rightDamaged && !leftDamaged) return;
+
+    static int smokeTimer = 0;
+    if (--smokeTimer > 0) return;
+    smokeTimer = (int)lerpf(10.0f, 3.0f, severity); // more frequent the worse it gets
+
+    float ox = 1.1f;
+    if (rightDamaged && leftDamaged) ox = (randi(0, 1) == 0) ? 1.1f : -1.1f; // both sides — alternate
+    else if (leftDamaged) ox = -1.1f;
+    float px = g.shipX + ox + randf(-0.08f, 0.08f);
+    float py = g.shipY + randf(-0.05f, 0.05f);
+    float pz = 0.3f + randf(-0.1f, 0.1f);
+
+    spawn_particle(4, px, py, pz,
+        randf(-0.015f, 0.015f), randf(0.01f, 0.035f), -randf(0.05f, 0.15f),
+        randi(35, 55), randf(0.6f, 1.0f) + severity * 0.3f, randf(-0.3f, 0.3f));
+
+    if (severity > 0.55f) { // bad enough to be properly on fire, not just smoking
+        spawn_particle(0, px, py, pz,
+            randf(-0.03f, 0.03f), randf(0.02f, 0.05f), -randf(0.3f, 0.6f),
+            randi(10, 18), randf(0.5f, 0.9f) + severity * 0.4f, randf(-0.4f, 0.4f));
+    }
+}
+
 static void spawn_voxel_debris(float x, float y, float z) {
     float ang = randf(0.0f, 6.28f);
     float spd = randf(0.06f, 0.22f);
@@ -822,6 +939,49 @@ static void spawn_fx(float x, float y, float z, bool big) {
         if (big && g.shake < 0.55f) g.shake = 0.55f;
         return;
     }
+}
+
+static void spawn_hull_debris(float lx, float ly, float lz, bool isRight) {
+    float side = isRight ? 1.0f : -1.0f;
+    for (int i = 0; i < 3; i++) {
+        spawn_particle(2,
+            g.shipX + lx + randf(-0.1f, 0.1f), g.shipY + ly + randf(-0.1f, 0.1f), lz + randf(-0.05f, 0.05f),
+            side * randf(0.02f, 0.06f), randf(-0.02f, 0.05f), -randf(0.4f, 0.9f),
+            randi(30, 55), randf(0.3f, 0.6f), randf(-0.5f, 0.5f));
+    }
+}
+
+// Whichever breakable box (hull or equipped part) just hit its breakRank on
+// this hit gets a little debris cloud that drifts backward off the ship,
+// instead of just silently vanishing from the mesh.
+static void spawn_debris_for_break(int newHitCount, bool isRight) {
+    const ShipDef *hull = &SHIPS[g.profile.loadout.ship];
+    for (int i = 0; i < hull->body_count; i++) {
+        const BoxDef *b = &hull->body[i];
+        bool onSide = isRight ? (b->cx > 0.05f) : (b->cx < -0.05f);
+        if (onSide && b->breakRank == newHitCount) spawn_hull_debris(b->cx, b->cy, b->cz, isRight);
+    }
+    for (int slot = 0; slot < PART_SLOT_COUNT; slot++) {
+        const PartDef *pt = &PARTS[slot][g.profile.loadout.parts[slot]];
+        for (int i = 0; i < pt->mesh_count; i++) {
+            const BoxDef *b = &pt->mesh[i];
+            bool onSide = isRight ? (b->cx > 0.05f) : (b->cx < -0.05f);
+            if (onSide && b->breakRank == newHitCount) spawn_hull_debris(b->cx, b->cy, b->cz, isRight);
+        }
+    }
+}
+
+// Adds `weight` hits (1 normally, 2 for a big impactor — see MAX_BREAK_RANK's
+// usage in the collision handler) to one side, clamped, spawning debris for
+// every rank newly crossed (so a weight-2 hit correctly pops two pieces at
+// once instead of skipping straight past the first).
+static void apply_side_hit(bool isRight, int weight, float dmgShare) {
+    int *hits = isRight ? &g.hitsRight : &g.hitsLeft;
+    int prev = *hits;
+    *hits += weight;
+    if (*hits > MAX_BREAK_RANK) *hits = MAX_BREAK_RANK;
+    for (int r = prev + 1; r <= *hits; r++) spawn_debris_for_break(r, isRight);
+    if (isRight) g.damageRight += dmgShare; else g.damageLeft += dmgShare;
 }
 
 // ---------------------------------------------------------------------
@@ -922,10 +1082,19 @@ static bool owns_ship(int id) { return g.profile.owned_ships[id]; }
 static bool owns_part(int slot, int id) { return g.profile.owned_parts[slot][id]; }
 static bool owns_color(int id) { return g.profile.owned_colors[id]; }
 
+// Down to just a wing's last stump AND health critical — the centered tail
+// flap goes too, so it ends up looking like little more than a bare rocket.
+static bool should_strip_central_flap(void) {
+    if (g.maxHealth <= 0.0f) return false; // no run started yet (e.g. first game_gl_ready)
+    bool oneWingStumped = g.hitsLeft >= 2 || g.hitsRight >= 2;
+    bool healthCritical = (g.health / g.maxHealth) < 0.25f;
+    return oneWingStumped && healthCritical;
+}
+
 static void rebuild_ship_mesh(void) {
     if (!g.gl_ready) return;
     gl_mesh_destroy(&g.ship_mesh);
-    g.ship_mesh = build_ship_mesh(&g.profile.loadout);
+    g.ship_mesh = build_ship_mesh(&g.profile.loadout, g.hitsLeft, g.hitsRight, should_strip_central_flap());
 }
 
 static void hangar_equip_ship(int id) {
@@ -1054,7 +1223,6 @@ void game_init(void) {
     memset(&g, 0, sizeof(g));
     g.state = STATE_MENU;
     g.speed = BASE_SPEED;
-    g.fireSide = 1;
 
     // defaultSave() equivalent: scout / std parts / arwing, all owned.
     g.profile.owned_ships[0] = true;
@@ -1084,7 +1252,7 @@ void game_gl_ready(void) {
     // A context_reset without a preceding context_destroy means the previous
     // context was lost out from under us — its handles are already dead, so
     // don't try to free them, just rebuild.
-    g.ship_mesh = build_ship_mesh(&g.profile.loadout);
+    g.ship_mesh = build_ship_mesh(&g.profile.loadout, g.hitsLeft, g.hitsRight, should_strip_central_flap());
     g.thruster_mesh = build_thruster_mesh();
     g.star_mesh = build_star_mesh();
     g.bullet_mesh = build_bullet_mesh();
@@ -1119,7 +1287,13 @@ void game_gl_shutdown(void) {
 static void start_run(void) {
     g.stats = compute_stats(&g.profile);
     g.score = 0;
-    g.lives = g.stats.lives;
+    g.maxHealth = (float)(g.stats.lives * 100);
+    g.health = g.maxHealth;
+    g.damageLeft = g.damageRight = 0.0f;
+    g.hitsLeft = g.hitsRight = 0;
+    g.hitFireTimer = 0;
+    g.shipDestroyed = false;
+    g.overFireTimer = 0;
     g.wave = 1;
     g.fireTimer = 0;
     g.spawnTimer = 45;
@@ -1139,6 +1313,8 @@ static void start_run(void) {
 
     seed_stars();
     reset_planets();
+    rebuild_ship_mesh(); // damage just reset to 0 — previous run's chewed-off look must not carry over
+    fire_set(0.0f);
 
     g.state = STATE_PLAY;
 }
@@ -1176,25 +1352,84 @@ static void update_world(float scroll_speed) {
     }
 }
 
+// Keeps enemies drifting/spinning/despawning during STATE_DYING — the same
+// movement lines the main enemy loop in update_play runs, minus collision
+// (the dying ship doesn't fight back or take hits anymore).
+static void update_enemies_visual_only(void) {
+    for (int i = 0; i < MAX_ENEMIES; i++) {
+        Enemy *e = &g.enemies[i];
+        if (!e->active) continue;
+        e->z -= g.speed * (e->type == 1 ? 0.7f : 1.0f) + 0.15f;
+        e->phase += e->weave;
+        e->x += sinf(e->phase) * 0.04f;
+        e->ry += e->spin;
+        e->rx += e->spin * 0.5f;
+        if (e->z < -8.0f) e->active = false;
+    }
+}
+
+// Fx/particle life decay + drift — pulled out of update_play so
+// STATE_DYING's debris and STATE_OVER's lingering fireball keep animating
+// too, instead of freezing solid outside STATE_PLAY.
+static void update_fx_and_particles(void) {
+    for (int i = 0; i < MAX_FX; i++) {
+        if (!g.fx[i].alive) continue;
+        g.fx[i].life--;
+        if (g.fx[i].life <= 0) g.fx[i].alive = false;
+    }
+
+    for (int i = 0; i < MAX_PARTICLES; i++) {
+        Particle *p = &g.particles[i];
+        if (!p->alive) continue;
+        p->life--;
+        p->x += p->vx; p->y += p->vy; p->z += p->vz;
+        switch (p->slot_kind) {
+            case 0: p->vz -= 0.02f; p->sc = lerpf(p->sc, 0.15f, 0.12f); break;
+            case 1: p->vx *= 0.90f; p->vy *= 0.90f; p->vz *= 0.90f; p->vy -= 0.008f; p->sc = lerpf(p->sc, 0.08f, 0.10f); break;
+            case 2: p->vx *= 0.94f; p->vy *= 0.94f; p->vz *= 0.94f; p->vy -= 0.012f; p->sc = lerpf(p->sc, 0.04f, 0.06f); break;
+            case 3: p->vx *= 0.86f; p->vy *= 0.86f; p->vz *= 0.86f; p->sc = lerpf(p->sc, 0.02f, 0.18f); break;
+            default: p->vx *= 0.96f; p->vy *= 0.96f; p->vz *= 0.96f; p->vy += 0.006f; p->sc = lerpf(p->sc, 1.6f, 0.04f); break;
+        }
+        if (p->life <= 0) p->alive = false;
+    }
+}
+
+// Three simultaneous mounts — left wing, centerline, right wing. Each wing
+// mount is weakened (fewer of the multishot spread, never below 1 — a mount
+// still fires something) by that side's own hit count; the centerline
+// isn't wing-mounted, so wing damage never touches it.
 static void fire_bullet(void) {
-    int n = g.stats.bullets;
     float spread = g.stats.spread;
-    for (int b = 0; b < n; b++) {
-        float t = (n == 1) ? 0.5f : (float)b / (float)(n - 1);
-        float off = (t - 0.5f) * spread * 2.0f;
-        float wx = (g.fireSide > 0 ? 1.6f : -1.6f) + off;
-        for (int i = 0; i < MAX_BULLETS; i++) {
-            if (g.bullets[i].alive) continue;
-            g.bullets[i].alive = true;
-            g.bullets[i].x = g.shipX + wx;
-            g.bullets[i].y = g.shipY;
-            g.bullets[i].z = 1.2f;
-            g.bullets[i].pz = 1.2f;
-            g.bullets[i].damage = g.stats.damage;
-            break;
+    int baseN = g.stats.bullets;
+    static const float MOUNTS[3] = {-1.6f, 0.0f, 1.6f};
+
+    for (int m = 0; m < 3; m++) {
+        int n = baseN;
+        if (MOUNTS[m] < 0.0f) {
+            if (g.hitsLeft >= GUN_DISABLE_HITS) continue; // mount's gone, not just weaker
+            n -= g.hitsLeft;
+        } else if (MOUNTS[m] > 0.0f) {
+            if (g.hitsRight >= GUN_DISABLE_HITS) continue;
+            n -= g.hitsRight;
+        }
+        if (n < 1) n = 1;
+
+        for (int b = 0; b < n; b++) {
+            float t = (n == 1) ? 0.5f : (float)b / (float)(n - 1);
+            float off = (t - 0.5f) * spread * 2.0f;
+            float wx = MOUNTS[m] + off;
+            for (int i = 0; i < MAX_BULLETS; i++) {
+                if (g.bullets[i].alive) continue;
+                g.bullets[i].alive = true;
+                g.bullets[i].x = g.shipX + wx;
+                g.bullets[i].y = g.shipY;
+                g.bullets[i].z = 1.2f;
+                g.bullets[i].pz = 1.2f;
+                g.bullets[i].damage = g.stats.damage;
+                break;
+            }
         }
     }
-    g.fireSide = -g.fireSide;
     play_sound(SOUND_LASER);
 }
 
@@ -1247,6 +1482,10 @@ static void update_play(const GameInput *input) {
     g.boosting = input->b_held || input->r2_held;
     bool braking = input->l2_held;
 
+    // Worst-damaged side's hit count — degrades bullet speed and fire
+    // cadence (see below) the closer that side gets to its last stump.
+    int worstWingHits = g.hitsLeft > g.hitsRight ? g.hitsLeft : g.hitsRight;
+
     float target_speed = BASE_SPEED * g.stats.speed + (float)g.wave * 0.03f;
     if (g.boosting) target_speed *= 2.1f;
     else if (braking) target_speed *= 0.45f;
@@ -1256,18 +1495,34 @@ static void update_play(const GameInput *input) {
     if (g.boosting && !was_boosting) play_sound(SOUND_JUMP);
     was_boosting = g.boosting;
 
-    g.velX = lerpf(g.velX, -ix * SHIP_ACCEL, 0.35f);
-    g.velY = lerpf(g.velY, -iy * SHIP_ACCEL * 0.85f, 0.35f);
+    // Lopsided hull damage pulls the ship toward whichever side took more
+    // hits, same as a plane favoring its intact wing — player has to hold
+    // some stick against it just to fly straight. Turbulence (wobble) grows
+    // with total damage on BOTH sides combined, so an evenly-battered ship
+    // shakes more than one hit the same total amount from just one side.
+    float dmgPull = clampf((g.damageRight - g.damageLeft) / DAMAGE_TILT_RANGE, -1.0f, 1.0f);
+    float severity = clampf((g.damageLeft + g.damageRight) / DAMAGE_SEVERITY_RANGE, 0.0f, 1.0f);
+    float wobbleX = sinf((float)g.frame * 0.07f) * severity;
+    float wobbleY = cosf((float)g.frame * 0.05f) * severity;
+
+    g.velX = lerpf(g.velX, -ix * SHIP_ACCEL + dmgPull * SHIP_ACCEL * 0.6f + wobbleX * SHIP_ACCEL * 0.3f, 0.35f);
+    g.velY = lerpf(g.velY, -iy * SHIP_ACCEL * 0.85f + wobbleY * SHIP_ACCEL * 0.2f, 0.35f);
     g.shipX = clampf(g.shipX + g.velX, -BOUNDS_X, BOUNDS_X);
     g.shipY = clampf(g.shipY + g.velY, BOUNDS_Y_LOW, BOUNDS_Y_HIGH);
-    g.roll = lerpf(g.roll, ix * 0.7f, 0.2f);
-    g.pitch = lerpf(g.pitch, -iy * 0.35f, 0.2f);
+    g.roll = lerpf(g.roll, ix * 0.7f + dmgPull * 0.5f + wobbleX * 0.25f, 0.2f);
+    g.pitch = lerpf(g.pitch, -iy * 0.35f + wobbleY * 0.15f, 0.2f);
 
     if (g.fireTimer > 0) g.fireTimer--;
     bool fire_held = input->a_held || input->r1_held;
     if (fire_held && g.fireTimer == 0) {
         fire_bullet();
-        g.fireTimer = g.stats.cooldown;
+        // Plain linear ramp, health only — 0 extra above half health, up to
+        // +2 frames at 0. Wing damage doesn't factor into cadence (only
+        // into bullet speed/mount count above), so it can't look like the
+        // cadence is dropping while health's still high.
+        float healthFrac = g.health / g.maxHealth;
+        int healthPenalty = (healthFrac < 0.5f) ? (int)((0.5f - healthFrac) * 4.0f) : 0;
+        g.fireTimer = g.stats.cooldown + healthPenalty;
     }
 
     update_world(g.speed);
@@ -1275,6 +1530,7 @@ static void update_play(const GameInput *input) {
     float boost_power = clampf((g.speed - BASE_SPEED) / (BASE_SPEED * 1.2f), 0.0f, 1.0f);
     if (g.boosting) spawn_boost_particles(g.shipX, g.shipY, -1.35f, boost_power);
     thrust_set(g.boosting, boost_power);
+    spawn_damage_smoke();
 
     g.spawnTimer--;
     if (g.spawnTimer <= 0) {
@@ -1284,10 +1540,15 @@ static void update_play(const GameInput *input) {
     }
     if (g.frame % 900 == 0 && g.frame > 0) g.wave++;
 
+    // Bullets fly slower the closer either side is to its last stump — the
+    // gun feed is failing along with the hull.
+    float bulletSpeed = 3.4f - (float)worstWingHits * 0.5f;
+    if (bulletSpeed < 1.8f) bulletSpeed = 1.8f;
+
     for (int i = 0; i < MAX_BULLETS; i++) {
         if (!g.bullets[i].alive) continue;
         g.bullets[i].pz = g.bullets[i].z;
-        g.bullets[i].z += 3.4f;
+        g.bullets[i].z += bulletSpeed;
         if (g.bullets[i].z > 135.0f) g.bullets[i].alive = false;
     }
 
@@ -1304,14 +1565,68 @@ static void update_play(const GameInput *input) {
         if (e->z < -8.0f) { e->active = false; continue; }
 
         if (g.invuln <= 0 && hit(g.shipX, g.shipY, 0.0f, 0.8f, e->x, e->y, e->z, e->radius)) {
+            // Bigger impactor, bigger bite out of the hull. Whichever side of
+            // the ship it hit on takes the damage — never cancels the other
+            // side, so a broken piece never regrows. A near-dead-center hit
+            // is frontal: a little off both sides instead of picking one. A
+            // big enough impactor is worth 2 pieces in one hit, not 1.
+            float dmg = clampf(e->radius * 40.0f, 12.0f, 55.0f);
+            float dx = e->x - g.shipX;
+            int weight = (e->radius > BIG_ENEMY_RADIUS) ? 2 : 1;
+            if (fabsf(dx) < FRONTAL_DX) {
+                apply_side_hit(true, weight, dmg * 0.5f);
+                apply_side_hit(false, weight, dmg * 0.5f);
+            } else {
+                apply_side_hit(dx >= 0.0f, weight, dmg);
+            }
+            rebuild_ship_mesh(); // cheap: only rebuilds the (few-box) mesh, and only on a hit
+            g.hitFireTimer = 180; // ~3s fire flare-up on top of the persistent severity-based one
+
             e->active = false;
-            g.lives--;
+            g.health -= dmg;
             g.invuln = 90;
             g.shake = 1.0f;
             spawn_fx(g.shipX, g.shipY, 0.5f, true);
             play_sound(SOUND_IMPACT);
             play_sound(SOUND_EXPLOSION_BIG);
-            if (g.lives <= 0) {
+
+            // The dogfight spin/instakill is specifically one whole wing
+            // gone while the OTHER side is still fully intact (0 hits) — a
+            // clean, sudden asymmetric failure. Any damage on both sides,
+            // even if one later reaches MAX_BREAK_RANK too, doesn't count —
+            // that's just attrition, and death for it only ever comes from
+            // health hitting 0 (the instant-explosion path below, no spin).
+            if ((g.hitsLeft >= MAX_BREAK_RANK && g.hitsRight == 0) ||
+                (g.hitsRight >= MAX_BREAK_RANK && g.hitsLeft == 0)) {
+                g.state = STATE_DYING;
+                thrust_set(0, 0.0f); // engine's dead — update_play (the only other caller) won't run again to stop it
+                g.dyingTimer = 40;
+                g.dyingSpin = 0.0f;
+                g.dyingOrbitAngle = 0.0f;
+                // Rolls toward whichever side is the one that's actually
+                // gone (hits, not damage magnitude — that's what decided
+                // the trigger above).
+                g.dyingSpinDir = (g.hitsRight >= MAX_BREAK_RANK) ? 1.0f : -1.0f;
+                g.dyingCenterX = g.shipX;
+                g.dyingCenterY = g.shipY;
+                g.prev_input = *input;
+                return;
+            }
+            // Running out of health outright is more final — no spin, just
+            // a bigger, deeper blast straight into STATE_OVER. Ship's gone;
+            // the fireball (overFireTimer) keeps burning into the run-over
+            // screen instead of cutting to a static shot.
+            if (g.health <= 0.0f) {
+                for (int fi = 0; fi < 5; fi++) {
+                    spawn_fx(g.shipX + randf(-0.5f, 0.5f), g.shipY + randf(-0.35f, 0.35f), 0.4f + randf(-0.2f, 0.2f), true);
+                }
+                play_sound(SOUND_EXPLOSION_GRAVE);
+                thrust_set(0, 0.0f);
+                fire_set(0.0f); // both are only ever re-driven from update_play — stop them here or they'd hold their last level forever
+                g.shipDestroyed = true;
+                g.dyingCenterX = g.shipX;
+                g.dyingCenterY = g.shipY;
+                g.overFireTimer = 90;
                 award_run_credits();
                 g.state = STATE_OVER;
                 g.prev_input = *input;
@@ -1364,26 +1679,7 @@ static void update_play(const GameInput *input) {
         }
     }
 
-    for (int i = 0; i < MAX_FX; i++) {
-        if (!g.fx[i].alive) continue;
-        g.fx[i].life--;
-        if (g.fx[i].life <= 0) g.fx[i].alive = false;
-    }
-
-    for (int i = 0; i < MAX_PARTICLES; i++) {
-        Particle *p = &g.particles[i];
-        if (!p->alive) continue;
-        p->life--;
-        p->x += p->vx; p->y += p->vy; p->z += p->vz;
-        switch (p->slot_kind) {
-            case 0: p->vz -= 0.02f; p->sc = lerpf(p->sc, 0.15f, 0.12f); break;
-            case 1: p->vx *= 0.90f; p->vy *= 0.90f; p->vz *= 0.90f; p->vy -= 0.008f; p->sc = lerpf(p->sc, 0.08f, 0.10f); break;
-            case 2: p->vx *= 0.94f; p->vy *= 0.94f; p->vz *= 0.94f; p->vy -= 0.012f; p->sc = lerpf(p->sc, 0.04f, 0.06f); break;
-            case 3: p->vx *= 0.86f; p->vy *= 0.86f; p->vz *= 0.86f; p->sc = lerpf(p->sc, 0.02f, 0.18f); break;
-            default: p->vx *= 0.96f; p->vy *= 0.96f; p->vz *= 0.96f; p->vy += 0.006f; p->sc = lerpf(p->sc, 1.6f, 0.04f); break;
-        }
-        if (p->life <= 0) p->alive = false;
-    }
+    update_fx_and_particles();
 
     if (g.invuln > 0) g.invuln--;
     g.frame++;
@@ -1483,6 +1779,15 @@ void game_update(const GameInput *input) {
             break;
         case STATE_OVER:
             update_world(BASE_SPEED * 0.4f);
+            update_fx_and_particles();
+            if (g.overFireTimer > 0) {
+                // Fireball keeps burning where the ship used to be instead
+                // of cutting straight to a static screen.
+                g.overFireTimer--;
+                if (g.overFireTimer % 12 == 0) {
+                    spawn_fx(g.dyingCenterX + randf(-0.4f, 0.4f), g.dyingCenterY + randf(-0.3f, 0.3f), 0.4f, true);
+                }
+            }
             if (confirm_edge) {
                 start_run();
             } else if (start_edge) {
@@ -1491,6 +1796,56 @@ void game_update(const GameInput *input) {
                 g.hangSel = 0;
                 g.hangFocusTabs = true;
                 g.hangNavLock = 0;
+            }
+            break;
+        case STATE_DYING:
+            // Enemies and fx/particles keep animating — the scene stays
+            // alive while the ship dies, it doesn't freeze around it.
+            update_enemies_visual_only();
+            update_fx_and_particles();
+            if (g.dyingTimer > 0) {
+                // Fast, violent tumble on its own axis (dyingSpin) — a real
+                // fighter snap-rolling out of control, not a graceful float
+                // — while separately (dyingOrbitAngle, much slower) also
+                // spiraling around a center point like a moon around a
+                // planet.
+                g.dyingSpin += 0.55f * g.dyingSpinDir;
+                g.dyingOrbitAngle += 0.06f * g.dyingSpinDir;
+                g.shipX = g.dyingCenterX + cosf(g.dyingOrbitAngle) * 1.4f * g.dyingSpinDir;
+                g.shipY = g.dyingCenterY + sinf(g.dyingOrbitAngle) * 0.7f;
+                update_world(g.speed * 0.5f);
+                g.dyingTimer--;
+                if (g.dyingTimer > 0 && g.dyingTimer % 8 == 0) {
+                    // Coming apart mid-spin — small pops and chunks flying
+                    // off, not a silent tumble.
+                    spawn_fx(g.shipX + randf(-0.4f, 0.4f), g.shipY + randf(-0.3f, 0.3f), 0.4f, false);
+                    spawn_hull_debris(randf(-0.9f, 0.9f), randf(-0.3f, 0.3f), randf(-0.3f, 0.3f), randi(0, 1) == 0);
+                }
+                if (g.dyingTimer <= 0) {
+                    g.dyingTimer = -30; // hand off to the finale phase below
+                    g.shake = 1.0f;
+                    g.shipDestroyed = true; // gone — the fireball takes over from here
+                    fire_set(0.0f); // hull's gone, nothing left to keep burning-sound-wise
+                    play_sound(SOUND_EXPLOSION_GRAVE); // the deep boom starts right here, no gap of silence
+                }
+            } else {
+                // Finale phase (dyingTimer counts from -30 up to 0): a
+                // prolonged implosion, staggered bursts + lots of chunks
+                // flying off, not one instant clean explosion.
+                g.dyingTimer++;
+                update_world(g.speed * 0.5f);
+                if (g.dyingTimer % 4 == 0) {
+                    spawn_fx(g.shipX + randf(-0.6f, 0.6f), g.shipY + randf(-0.4f, 0.4f), 0.4f + randf(-0.2f, 0.2f), true);
+                    for (int c = 0; c < 5; c++) {
+                        spawn_hull_debris(randf(-1.2f, 1.2f), randf(-0.5f, 0.5f), randf(-0.5f, 0.5f), randi(0, 1) == 0);
+                    }
+                }
+                if (g.dyingTimer % 10 == 0) play_sound(SOUND_EXPLOSION_GRAVE); // keeps the boom rolling through the implosion
+                if (g.dyingTimer >= 0) {
+                    g.overFireTimer = 90; // fireball keeps burning into the run-over screen
+                    award_run_credits();
+                    g.state = STATE_OVER;
+                }
             }
             break;
         default: // STATE_PLAY
@@ -1601,6 +1956,12 @@ static void render_ship_and_thruster(bool show_ship) {
             mat4_multiply(mat4_translate(g.shipX, g.shipY, -1.15f), mat4_rotate_xyz(g.pitch, 0.0f, g.roll)),
             mat4_scale(1.0f, 1.0f, pulse));
         gl_mesh_draw(&g.thruster_mesh, thruster_model);
+    } else if (g.state == STATE_DYING) {
+        // Fast violent tumble on its own axis (dyingSpin) — position
+        // (g.shipX/Y, already updated in game_update) separately spirals
+        // slowly around dyingCenter.
+        ship_model = mat4_multiply(mat4_translate(g.shipX, g.shipY, 0.0f),
+            mat4_rotate_xyz(0.0f, 0.0f, g.dyingSpin));
     } else {
         ship_model = mat4_rotate_xyz(0.0f, g.menuSpin, 0.0f);
     }
@@ -1615,12 +1976,13 @@ static void draw_backdrop(int width, int height) {
     gl_draw_quad2d(0.0f, (float)height - 28.0f, (float)width, 28.0f, 0.0f, 0.0f, 0.0f, 0.31f, width, height);
 }
 
-static void draw_lives(int width, int height) {
-    for (int i = 0; i < g.lives; i++) {
-        float x = (float)width - 40.0f - (float)i * 26.0f;
-        float y = 26.0f;
-        gl_draw_triangle2d(x, y + 14.0f, x + 10.0f, y + 14.0f, x + 5.0f, y, C_GREEN[0], C_GREEN[1], C_GREEN[2], C_GREEN[3], width, height);
-    }
+static void draw_health_bar(int width, int height) {
+    float bw = 120.0f, x = (float)width - bw - 16.0f, y = (float)height - 26.0f;
+    gl_draw_quad2d(x, y, bw, 10.0f, 0.12f, 0.16f, 0.24f, 1.0f, width, height);
+    float frac = clampf(g.health / g.maxHealth, 0.0f, 1.0f);
+    const float *c = frac > 0.5f ? C_GREEN : (frac > 0.25f ? C_YELLOW : C_RED);
+    gl_draw_quad2d(x, y, bw * frac, 10.0f, c[0], c[1], c[2], c[3], width, height);
+    text_draw(x, y - 22.0f, 14.0f, C_DIM[0], C_DIM[1], C_DIM[2], C_DIM[3], "HULL", width, height);
 }
 
 static void draw_boost_bar(int width, int height) {
@@ -1764,7 +2126,7 @@ static void draw_hud(int width, int height) {
         const char *cfg = "START = CONFIGURE SHIP";
         text_draw((float)width * 0.5f - text_width(cfg, 13.0f) * 0.5f, 272.0f, 13.0f, C_DIM[0], C_DIM[1], C_DIM[2], C_DIM[3], cfg, width, height);
     } else {
-        draw_lives(width, height);
+        draw_health_bar(width, height);
         draw_boost_bar(width, height);
         snprintf(buf, sizeof(buf), "%dC", g.profile.credits);
         text_draw((float)width - 90.0f, 34.0f, 14.0f, C_CYAN[0], C_CYAN[1], C_CYAN[2], C_CYAN[3], buf, width, height);
@@ -1818,7 +2180,8 @@ void game_render(unsigned int fbo, int width, int height, int dead_w, int dead_h
     render_fx();
     render_particles();
 
-    bool show_ship = (g.state != STATE_PLAY) || (g.invuln <= 0) || (((g.invuln / 6) % 2) == 0);
+    bool show_ship = !g.shipDestroyed &&
+        ((g.state != STATE_PLAY) || (g.invuln <= 0) || (((g.invuln / 6) % 2) == 0));
     render_ship_and_thruster(show_ship);
 
     // Back to the full safe area for the 2D HUD overlay (drawn in a shrunk

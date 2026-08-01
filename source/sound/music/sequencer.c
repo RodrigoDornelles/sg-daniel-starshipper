@@ -83,6 +83,11 @@ void music_set_track(MusicTrack track) {
         default:
             break;
     }
+
+    // A whole step lower + a drier, distorted saw drone specifically for
+    // the defeat screen — everywhere else stays as-is.
+    scales_set_transpose(track == MUSIC_GAMEOVER ? -2 : 0);
+    pad_set_gameover(track == MUSIC_GAMEOVER);
 }
 
 // Full band: drums + bass + lead over the pad, following the song structure.
