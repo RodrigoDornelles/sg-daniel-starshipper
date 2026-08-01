@@ -70,6 +70,16 @@
 #define LOOK_X 0.0f
 #define LOOK_Y 0.0f
 #define LOOK_Z 24.0f
+#define CAM_FOV_DEG 72.0f
+
+// The playable area (ship/enemies/bullets/fx/particles) is always confined
+// to a centered viewport at this fixed aspect, regardless of the actual
+// display resolution — physics, framing and on-screen alignment (e.g.
+// bullet vs. asteroid) stay identical no matter what resolution is picked.
+// Any extra width (widescreen) or height (taller-than-4:3) just shows more
+// background around that box. Bump these to change the reference size.
+#define PHYSICS_REF_WIDTH 1280
+#define PHYSICS_REF_HEIGHT 960
 
 static const float SPACE_COLOR[3] = {6.0f / 255.0f, 8.0f / 255.0f, 26.0f / 255.0f};
 static const float C_WHITE[4]  = {0.90f, 0.94f, 1.0f, 1.0f};
@@ -985,12 +995,44 @@ static void hangar_confirm(void) {
 }
 
 // ---------------------------------------------------------------------
+// Screen-dependent tuning — STAR_SPREAD_X/PLANET_DEFS.x are authored for a
+// generic default and, being fixed world-space numbers, don't reach the
+// screen edges at every aspect ratio (a wide-FOV frustum is much wider than
+// tall at the star field's depth). The background camera (game_render) uses
+// the *real* display aspect so it always fills the screen — this derives
+// the matching spread from that same real aspect, unlike PHYSICS_REF_*
+// below which locks the playable area instead.
+// ---------------------------------------------------------------------
+#define REFERENCE_ASPECT ((float)PHYSICS_REF_WIDTH / (float)PHYSICS_REF_HEIGHT)
+#define STAR_FIELD_FILL 0.9f // leave a slim margin so stars don't clip exactly at the edge
+
+static float s_star_spread_x = STAR_SPREAD_X;
+static float s_star_spread_y = STAR_SPREAD_Y;
+static float s_field_scale_x = 1.0f; // s_star_spread_x / STAR_SPREAD_X, reused for planet X
+static float s_hud_scale = 1.0f;
+
+void game_set_screen(int width, int height) {
+    float aspect = (height > 0) ? (float)width / (float)height : REFERENCE_ASPECT;
+    float half_fov = CAM_FOV_DEG * 0.5f * (float)M_PI / 180.0f;
+    float z_ref = (STAR_Z_NEAR + STAR_Z_FAR) * 0.5f;
+    float half_height = z_ref * tanf(half_fov); // vertical FOV is aspect-independent
+    s_star_spread_x = half_height * aspect * STAR_FIELD_FILL;
+    s_star_spread_y = half_height * STAR_FIELD_FILL;
+    s_field_scale_x = s_star_spread_x / STAR_SPREAD_X;
+}
+
+void game_set_hud_scale(float scale) {
+    s_hud_scale = scale > 0.0f ? scale : 1.0f;
+}
+
+// ---------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------
 static void seed_stars(void) {
+    float spread_x = s_star_spread_x;
     for (int i = 0; i < STAR_COUNT; i++) {
-        g.stars[i].x = randf(-STAR_SPREAD_X, STAR_SPREAD_X);
-        g.stars[i].y = randf(-STAR_SPREAD_Y, STAR_SPREAD_Y);
+        g.stars[i].x = randf(-spread_x, spread_x);
+        g.stars[i].y = randf(-s_star_spread_y, s_star_spread_y);
         g.stars[i].z = randf(STAR_Z_NEAR, STAR_Z_FAR);
         g.stars[i].par = randf(0.04f, 0.16f);
         g.stars[i].sc = randf(0.35f, 0.95f);
@@ -1000,7 +1042,7 @@ static void seed_stars(void) {
 static void reset_planets(void) {
     for (int i = 0; i < MAX_PLANETS; i++) {
         const PlanetDef *def = &PLANET_DEFS[i];
-        g.planets[i].x = def->x;
+        g.planets[i].x = def->x * s_field_scale_x;
         g.planets[i].y = def->y;
         g.planets[i].z = def->z;
         g.planets[i].sc = def->sc;
@@ -1104,21 +1146,31 @@ static void start_run(void) {
 // ---------------------------------------------------------------------
 // Update
 // ---------------------------------------------------------------------
+// Planets only ever move in Z — approach the camera, then get recycled far
+// back out. PLANET_WRAP_Z is how close (in world Z; camera sits at CAM_Z)
+// they get before recycling: low enough that their fixed X offset has grown
+// huge relative to Z (perspective divide), so they've already swept past the
+// screen edges instead of still being visible near center when they reset.
+#define PLANET_APPROACH_RATE 0.15f // was 0.35 — take noticeably longer to close in
+#define PLANET_WRAP_Z 8.0f         // was 60 — recycle much closer to the camera
+#define PLANET_RESPAWN_DISTANCE 300.0f
+
 static void update_world(float scroll_speed) {
+    float spread_x = s_star_spread_x;
     for (int i = 0; i < STAR_COUNT; i++) {
         g.stars[i].x -= scroll_speed * g.stars[i].par;
-        if (g.stars[i].x < -STAR_SPREAD_X) {
-            g.stars[i].x += STAR_SPREAD_X * 2.0f;
-            g.stars[i].y = randf(-STAR_SPREAD_Y, STAR_SPREAD_Y);
+        if (g.stars[i].x < -spread_x) {
+            g.stars[i].x += spread_x * 2.0f;
+            g.stars[i].y = randf(-s_star_spread_y, s_star_spread_y);
             g.stars[i].z = randf(STAR_Z_NEAR, STAR_Z_FAR);
         }
     }
     for (int i = 0; i < MAX_PLANETS; i++) {
-        g.planets[i].z -= scroll_speed * 0.35f;
-        if (g.planets[i].z < 60.0f) {
+        g.planets[i].z -= scroll_speed * PLANET_APPROACH_RATE;
+        if (g.planets[i].z < PLANET_WRAP_Z) {
             const PlanetDef *def = &PLANET_DEFS[i];
-            g.planets[i].z += 260.0f;
-            g.planets[i].x = def->x + randf(-8.0f, 8.0f);
+            g.planets[i].z += PLANET_RESPAWN_DISTANCE;
+            g.planets[i].x = def->x * s_field_scale_x + randf(-8.0f, 8.0f);
             g.planets[i].y = def->y + randf(-2.5f, 2.5f);
         }
     }
@@ -1736,11 +1788,31 @@ void game_render(unsigned int fbo, int width, int height, int dead_w, int dead_h
     float camX = CAM_X + sx, camY = CAM_Y + sy, camZ = CAM_Z;
 
     Mat4 view = mat4_look_at(camX, camY, camZ, LOOK_X, LOOK_Y, LOOK_Z, 0.0f, 1.0f, 0.0f);
-    Mat4 proj = mat4_perspective(72.0f, (float)safe_w / (float)safe_h, 0.5f, 900.0f);
-    gl_set_camera(view, proj);
 
+    // Background: fills the whole safe area at the *real* aspect — always
+    // reaches the edges regardless of resolution.
+    Mat4 proj_bg = mat4_perspective(CAM_FOV_DEG, (float)safe_w / (float)safe_h, 0.5f, 900.0f);
+    gl_set_camera(view, proj_bg);
     render_planets(camX, camY, camZ);
     render_stars();
+
+    // Gameplay: a centered sub-viewport clamped to REFERENCE_ASPECT, with a
+    // matching projection — actual glViewport changes (not just the
+    // projection matrix), so this never stretches/distorts, it only ever
+    // shrinks along one axis. Any leftover width or height keeps showing the
+    // background just drawn above.
+    int game_w = safe_w, game_h = safe_h;
+    if ((float)safe_w / (float)safe_h > REFERENCE_ASPECT) {
+        game_w = (int)((float)safe_h * REFERENCE_ASPECT);
+    } else {
+        game_h = (int)((float)safe_w / REFERENCE_ASPECT);
+    }
+    int game_x = dead_w / 2 + (safe_w - game_w) / 2;
+    int game_y = dead_h / 2 + (safe_h - game_h) / 2;
+    gl_set_viewport(game_x, game_y, game_w, game_h);
+
+    Mat4 proj_game = mat4_perspective(CAM_FOV_DEG, REFERENCE_ASPECT, 0.5f, 900.0f);
+    gl_set_camera(view, proj_game);
     render_enemies();
     render_bullets();
     render_fx();
@@ -1749,5 +1821,10 @@ void game_render(unsigned int fbo, int width, int height, int dead_w, int dead_h
     bool show_ship = (g.state != STATE_PLAY) || (g.invuln <= 0) || (((g.invuln / 6) % 2) == 0);
     render_ship_and_thruster(show_ship);
 
-    draw_hud(safe_w, safe_h);
+    // Back to the full safe area for the 2D HUD overlay (drawn in a shrunk
+    // logical space — text_draw/gl_draw_quad2d only use width/height to
+    // build their ortho matrix, so a smaller logical extent here reads as a
+    // bigger HUD on screen).
+    gl_set_viewport(dead_w / 2, dead_h / 2, safe_w, safe_h);
+    draw_hud((int)((float)safe_w / s_hud_scale), (int)((float)safe_h / s_hud_scale));
 }

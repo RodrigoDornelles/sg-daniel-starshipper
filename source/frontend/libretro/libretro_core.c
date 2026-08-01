@@ -86,8 +86,9 @@ RETRO_API void retro_set_environment(retro_environment_t cb) {
 
     static const struct retro_variable vars[] = {
         { "spaceshipper_audio", "Audio; enabled|disabled" },
-        { "spaceshipper_resolution", "Resolution; 640x480|320x240|960x720|1280x960" },
+        { "spaceshipper_resolution", "Resolution; 640x480|320x240|960x720|1280x960|1920x1080" },
         { "spaceshipper_deadscreen", "Dead zone (TV overscan); 32x32|0x0|48x36|64x48" },
+        { "spaceshipper_hud_scale", "HUD Scale; 1x|1.5x|2x|3x" },
         { NULL, NULL },
     };
     cb(RETRO_ENVIRONMENT_SET_VARIABLES, (void *)vars);
@@ -120,6 +121,15 @@ static void poll_deadscreen_option(void) {
             deadscreen_h = (uint16_t)h;
         }
     }
+}
+
+static void poll_hud_scale_option(void) {
+    struct retro_variable var = { "spaceshipper_hud_scale", NULL };
+    float scale = 1.0f;
+    if (environ_cb && environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
+        sscanf(var.value, "%f", &scale); // "Nx" - trailing 'x' just stops the scan
+    }
+    game_set_hud_scale(scale);
 }
 
 // libretro.h documents RETRO_ENVIRONMENT_SET_HW_RENDER as "should be called
@@ -247,7 +257,9 @@ RETRO_API bool retro_load_game(const struct retro_game_info *info) {
     poll_audio_option();
     poll_resolution_option();
     poll_deadscreen_option();
+    poll_hud_scale_option();
     audio_init(AUDIO_SAMPLE_RATE);
+    game_set_screen((int)screen_w, (int)screen_h);
     game_init();
     return true;
 }

@@ -34,6 +34,12 @@ void game_init(void);
 void game_shutdown(void);
 void game_reset(void);
 
+// Both take effect on the next game_init()/game_reset() (star/planet field
+// layout) or game_render() (HUD scale) — call before game_init() so the
+// very first run already uses them.
+void game_set_screen(int width, int height);
+void game_set_hud_scale(float scale);
+
 // Called from the HW render context_reset callback once a GL context is
 // live — GL meshes are (re)built here, never in game_init().
 void game_gl_ready(void);
