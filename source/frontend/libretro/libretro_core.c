@@ -32,11 +32,23 @@ static bool s_clock_started = false;
 static double s_last_time = 0.0;
 static double s_accumulator = 0.0;
 
-static double monotonic_now(void) {
+#ifdef _WIN32
+#include <windows.h>
+double monotonic_now(void) {
+    static LARGE_INTEGER freq;
+    if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+    LARGE_INTEGER c;
+    QueryPerformanceCounter(&c);
+    return (double)c.QuadPart / (double)freq.QuadPart;
+}
+#else
+#include <time.h>
+double monotonic_now(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
 }
+#endif
 
 static retro_environment_t environ_cb;
 static retro_video_refresh_t video_cb;

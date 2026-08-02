@@ -131,14 +131,14 @@ static float apply_deadzone(float v) {
 // steadily instead of jittering every frame.
 // ---------------------------------------------------------------------
 static float s_fps = 0.0f;
-static struct timespec s_fps_last;
-static bool s_fps_has_last = false;
+static double s_fps_last = 0.0;
+static bool   s_fps_has_last = false;
 
+double monotonic_now(void);
 static void update_fps(void) {
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
+    double now = monotonic_now();
     if (s_fps_has_last) {
-        double dt = (double)(now.tv_sec - s_fps_last.tv_sec) + (double)(now.tv_nsec - s_fps_last.tv_nsec) * 1e-9;
+        double dt = now - s_fps_last;
         if (dt > 0.0005) {
             float instant = (float)(1.0 / dt);
             s_fps = (s_fps <= 0.0f) ? instant : lerpf(s_fps, instant, 0.1f);

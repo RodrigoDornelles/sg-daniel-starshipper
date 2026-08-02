@@ -1,8 +1,13 @@
 #include "loadgl.h"
 
-#include <dlfcn.h>
 #include <stdbool.h>
 #include <stddef.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 
 // glad/gl.h only *declares* these (GLAD_API_CALL expands to `extern` [+
 // visibility attribute]) — glad's own generated gl.c used to define them.
@@ -53,6 +58,24 @@ PFNGLUSEPROGRAMPROC glad_glUseProgram = NULL;
 PFNGLVERTEXATTRIBPOINTERPROC glad_glVertexAttribPointer = NULL;
 PFNGLVIEWPORTPROC glad_glViewport = NULL;
 
+#ifdef _WIN32
+static HMODULE gl_fallback_lib(void) {
+    static HMODULE handle = NULL;
+    static bool tried = false;
+    if (!tried) {
+        tried = true;
+        handle = LoadLibraryA("opengl32.dll");
+    }
+    return handle;
+}
+
+static void *gl_load_symbol(GLADloadfunc load, const char *name) {
+    void *p = (void *) load(name);
+    if (p) return p;
+    HMODULE handle = gl_fallback_lib();
+    return handle ? (void *) GetProcAddress(handle, name) : NULL;
+}
+#else
 static void *gl_fallback_lib(void) {
     static void *handle = NULL;
     static bool tried = false;
@@ -71,6 +94,7 @@ static void *gl_load_symbol(GLADloadfunc load, const char *name) {
     void *handle = gl_fallback_lib();
     return handle ? dlsym(handle, name) : NULL;
 }
+#endif
 
 #define GLFN_LOAD(NAME, TYPE) (glad_##NAME = (TYPE) gl_load_symbol(load, #NAME))
 
